@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Rol, PerfilUsuario, Empleado, Cliente
+from .models import Rol, Usuario, Empleado, Cliente
 
 
 @admin.register(Rol)
@@ -8,22 +8,22 @@ class RolAdmin(admin.ModelAdmin):
     search_fields = ('nombre',)
 
 
-@admin.register(PerfilUsuario)
-class PerfilUsuarioAdmin(admin.ModelAdmin):
-    list_display = ('usuario', 'rol', 'telefono', 'direccion', 'creado_el')
-    search_fields = ('usuario__username', 'usuario__email')
-    list_filter = ('rol', 'creado_el')
+@admin.register(Usuario)
+class UsuarioAdmin(admin.ModelAdmin):
+    list_display = ('id_usuario', 'nombre', 'correo', 'cod_rol')
+    search_fields = ('nombre', 'correo')
+    list_filter = ('cod_rol',)
 
 
 @admin.register(Empleado)
 class EmpleadoAdmin(admin.ModelAdmin):
-    list_display = ('cod_empleado', 'usuario', 'cargo', 'turno', 'fecha_contratacion')
-    search_fields = ('usuario__username', 'cargo')
-    list_filter = ('turno', 'fecha_contratacion')
+    list_display = ('cod_empleado', 'id_usuario', 'cargo', 'turno')
+    search_fields = ('id_usuario__nombre', 'cargo')
+    list_filter = ('turno',)
 
 
 @admin.register(Cliente)
 class ClienteAdmin(admin.ModelAdmin):
-    list_display = ('cod_cliente', 'usuario', 'correo_contacto', 'puntos_fidelidad')
-    search_fields = ('usuario__username', 'correo_contacto')
-    list_filter = ('puntos_fidelidad',)
+    list_display = ('cod_cliente', 'id_usuario', 'telefono')
+    search_fields = ('id_usuario__nombre', 'telefono')
+

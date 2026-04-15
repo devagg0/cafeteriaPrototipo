@@ -1,13 +1,12 @@
-from django.contrib.auth.models import User
 from django.db import models
 from django.db.models.signals import post_migrate
 from django.dispatch import receiver
 
 
 class Rol(models.Model):
-    cod_rol = models.BigAutoField(primary_key=True)
-    nombre = models.CharField(max_length=30, unique=True)
-    descripcion = models.TextField(blank=True)
+    cod_rol = models.CharField(max_length=5, primary_key=True)
+    nombre = models.CharField(max_length=20)
+    descripcion = models.CharField(max_length=100, blank=True)
 
     class Meta:
         verbose_name = 'Rol'
@@ -17,39 +16,47 @@ class Rol(models.Model):
         return self.nombre
 
 
-class PerfilUsuario(models.Model):
-    usuario = models.OneToOneField(User, on_delete=models.CASCADE, related_name='perfil')
-    rol = models.ForeignKey(Rol, on_delete=models.PROTECT, related_name='perfiles')
-    telefono = models.CharField(max_length=30, blank=True)
-    direccion = models.CharField(max_length=200, blank=True)
-    creado_el = models.DateTimeField(auto_now_add=True)
-    actualizado_el = models.DateTimeField(auto_now=True)
+class Usuario(models.Model):
+    id_usuario = models.AutoField(primary_key=True)
+    nombre = models.CharField(max_length=50)
+    correo = models.EmailField(max_length=60, unique=True)
+    contrasena = models.CharField(max_length=100, unique=True)
+    cod_rol = models.ForeignKey(Rol, on_delete=models.CASCADE, related_name='usuarios')
+
+    class Meta:
+        verbose_name = 'Usuario'
+        verbose_name_plural = 'Usuarios'
 
     def __str__(self):
-        return f'{self.usuario.username} - perfil'
-
-
-class Empleado(models.Model):
-    cod_empleado = models.BigAutoField(primary_key=True)
-    usuario = models.OneToOneField(User, on_delete=models.CASCADE, related_name='empleado_perfil')
-    cargo = models.CharField(max_length=50)
-    turno = models.CharField(max_length=50)
-    fecha_contratacion = models.DateField(blank=True, null=True)
-    notas = models.TextField(blank=True)
-
-    def __str__(self):
-        return f'{self.usuario.username} - {self.cargo} ({self.turno})'
+        return self.nombre
 
 
 class Cliente(models.Model):
-    cod_cliente = models.BigAutoField(primary_key=True)
-    usuario = models.OneToOneField(User, on_delete=models.CASCADE, related_name='cliente_perfil')
-    correo_contacto = models.EmailField(blank=True)
-    puntos_fidelidad = models.IntegerField(default=0)
-    notas = models.TextField(blank=True)
+    cod_cliente = models.CharField(max_length=6, primary_key=True)
+    telefono = models.CharField(max_length=15, unique=True)
+    direccion = models.CharField(max_length=100)
+    id_usuario = models.OneToOneField(Usuario, on_delete=models.CASCADE, related_name='cliente', db_column='id_usuario')
+
+    class Meta:
+        verbose_name = 'Cliente'
+        verbose_name_plural = 'Clientes'
 
     def __str__(self):
-        return f'{self.usuario.username} - cliente'
+        return f'{self.cod_cliente} - {self.id_usuario.nombre}'
+
+
+class Empleado(models.Model):
+    cod_empleado = models.CharField(max_length=6, primary_key=True)
+    cargo = models.CharField(max_length=30)
+    turno = models.CharField(max_length=20)
+    id_usuario = models.OneToOneField(Usuario, on_delete=models.CASCADE, related_name='empleado', db_column='id_usuario')
+
+    class Meta:
+        verbose_name = 'Empleado'
+        verbose_name_plural = 'Empleados'
+
+    def __str__(self):
+        return f'{self.cod_empleado} - {self.id_usuario.nombre}'
 
 
 @receiver(post_migrate)
@@ -58,9 +65,9 @@ def crear_roles_por_defecto(sender, **kwargs):
         return
 
     roles = [
-        ('Admin', 'Administrador con acceso completo'),
-        ('Empleado', 'Usuario con permisos de empleado'),
-        ('Cliente', 'Usuario con permisos de cliente'),
+        ('admin', 'Admin', 'Administrador con acceso completo'),
+        ('emp', 'Empleado', 'Usuario con permisos de empleado'),
+        ('cli', 'Cliente', 'Usuario con permisos de cliente'),
     ]
-    for nombre, descripcion in roles:
-        Rol.objects.get_or_create(nombre=nombre, defaults={'descripcion': descripcion})
+    for cod, nombre, descripcion in roles:
+        Rol.objects.get_or_create(cod_rol=cod, defaults={'nombre': nombre, 'descripcion': descripcion})

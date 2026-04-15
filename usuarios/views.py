@@ -1,9 +1,13 @@
 import json
+import hashlib
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
-from django.contrib.auth import authenticate, login, logout
-from django.contrib.auth.models import User
-from .models import Rol, PerfilUsuario, Empleado, Cliente
+from .models import Rol, Usuario, Empleado, Cliente
+
+
+def hashear_contrasena(contrasena):
+    """Hashea una contraseña con SHA-256"""
+    return hashlib.sha256(contrasena.encode()).hexdigest()
 
 
 @csrf_exempt
@@ -13,11 +17,17 @@ def login_view(request):
             data = json.loads(request.body)
             correo = data.get('correo')
             contrasena = data.get('contrasena')
-            user = authenticate(username=correo, password=contrasena)
-            if user:
-                login(request, user)
-                return JsonResponse({'mensaje': 'Inicio de sesión exitoso', 'usuario_id': user.id})
-            else:
+            if not correo or not contrasena:
+                return JsonResponse({'error': 'Campos requeridos: correo, contrasena'}, status=400)
+            try:
+                usuario = Usuario.objects.get(correo=correo, contrasena=hashear_contrasena(contrasena))
+                return JsonResponse({
+                    'mensaje': 'Inicio de sesión exitoso',
+                    'id_usuario': usuario.id_usuario,
+                    'nombre': usuario.nombre,
+                    'rol': usuario.cod_rol.nombre
+                })
+            except Usuario.DoesNotExist:
                 return JsonResponse({'error': 'Credenciales inválidas'}, status=400)
         except json.JSONDecodeError:
             return JsonResponse({'error': 'JSON inválido'}, status=400)
@@ -27,34 +37,28 @@ def login_view(request):
 @csrf_exempt
 def logout_view(request):
     if request.method == 'POST':
-        logout(request)
         return JsonResponse({'mensaje': 'Cierre de sesión exitoso'})
     return JsonResponse({'error': 'Método no permitido'}, status=405)
 
 
-def usuario_a_dict(user):
-    perfil = getattr(user, 'perfil', None)
-    empleado = getattr(user, 'empleado_perfil', None)
-    cliente = getattr(user, 'cliente_perfil', None)
+def usuario_a_dict(usuario):
+    empleado = getattr(usuario, 'empleado', None)
+    cliente = getattr(usuario, 'cliente', None)
     return {
-        'id_usuario': user.id,
-        'nombre': user.first_name,
-        'correo': user.email,
-        'telefono': perfil.telefono if perfil else '',
-        'direccion': perfil.direccion if perfil else '',
-        'rol': {'cod_rol': perfil.rol.cod_rol, 'nombre': perfil.rol.nombre} if perfil else None,
+        'id_usuario': usuario.id_usuario,
+        'nombre': usuario.nombre,
+        'correo': usuario.correo,
+        'cod_rol': usuario.cod_rol.cod_rol,
+        'rol_nombre': usuario.cod_rol.nombre,
         'empleado': {
             'cod_empleado': empleado.cod_empleado,
             'cargo': empleado.cargo,
             'turno': empleado.turno,
-            'fecha_contratacion': empleado.fecha_contratacion.isoformat() if empleado.fecha_contratacion else None,
-            'notas': empleado.notas
         } if empleado else None,
         'cliente': {
             'cod_cliente': cliente.cod_cliente,
-            'correo_contacto': cliente.correo_contacto,
-            'puntos_fidelidad': cliente.puntos_fidelidad,
-            'notas': cliente.notas
+            'telefono': cliente.telefono,
+            'direccion': cliente.direccion,
         } if cliente else None,
     }
 
@@ -62,7 +66,7 @@ def usuario_a_dict(user):
 @csrf_exempt
 def lista_usuarios(request):
     if request.method == 'GET':
-        usuarios = User.objects.all()
+        usuarios = Usuario.objects.all()
         data = [usuario_a_dict(u) for u in usuarios]
         return JsonResponse(data, safe=False)
     elif request.method == 'POST':
@@ -72,19 +76,21 @@ def lista_usuarios(request):
             correo = data.get('correo')
             contrasena = data.get('contrasena')
             cod_rol = data.get('cod_rol')
-            telefono = data.get('telefono', '')
-            direccion = data.get('direccion', '')
             if not all([nombre, correo, contrasena, cod_rol]):
                 return JsonResponse({'error': 'Campos requeridos: nombre, correo, contrasena, cod_rol'}, status=400)
-            if User.objects.filter(email=correo).exists():
+            if Usuario.objects.filter(correo=correo).exists():
                 return JsonResponse({'error': 'Correo ya registrado'}, status=400)
             try:
                 rol = Rol.objects.get(cod_rol=cod_rol)
             except Rol.DoesNotExist:
                 return JsonResponse({'error': 'Rol no encontrado'}, status=400)
-            user = User.objects.create_user(username=correo, email=correo, password=contrasena, first_name=nombre)
-            PerfilUsuario.objects.create(usuario=user, rol=rol, telefono=telefono, direccion=direccion)
-            return JsonResponse({'mensaje': 'Usuario creado', 'usuario_id': user.id}, status=201)
+            usuario = Usuario.objects.create(
+                nombre=nombre,
+                correo=correo,
+                contrasena=hashear_contrasena(contrasena),
+                cod_rol=rol
+            )
+            return JsonResponse({'mensaje': 'Usuario creado', 'id_usuario': usuario.id_usuario}, status=201)
         except json.JSONDecodeError:
             return JsonResponse({'error': 'JSON inválido'}, status=400)
     return JsonResponse({'error': 'Método no permitido'}, status=405)
@@ -93,27 +99,26 @@ def lista_usuarios(request):
 @csrf_exempt
 def detalle_usuario(request, user_id):
     try:
-        user = User.objects.get(id=user_id)
-    except User.DoesNotExist:
+        usuario = Usuario.objects.get(id_usuario=user_id)
+    except Usuario.DoesNotExist:
         return JsonResponse({'error': 'Usuario no encontrado'}, status=404)
     if request.method == 'GET':
-        return JsonResponse(usuario_a_dict(user))
+        return JsonResponse(usuario_a_dict(usuario))
     elif request.method == 'PUT':
         try:
             data = json.loads(request.body)
-            user.first_name = data.get('nombre', user.first_name)
-            user.email = data.get('correo', user.email)
-            user.save()
-            perfil = getattr(user, 'perfil', None)
-            if perfil:
-                perfil.telefono = data.get('telefono', perfil.telefono)
-                perfil.direccion = data.get('direccion', perfil.direccion)
-                perfil.save()
+            usuario.nombre = data.get('nombre', usuario.nombre)
+            usuario.correo = data.get('correo', usuario.correo)
+            if 'contrasena' in data:
+                usuario.contrasena = hashear_contrasena(data.get('contrasena'))
+            usuario.save()
             return JsonResponse({'mensaje': 'Usuario actualizado'})
         except json.JSONDecodeError:
             return JsonResponse({'error': 'JSON inválido'}, status=400)
+        except Exception as e:
+            return JsonResponse({'error': str(e)}, status=400)
     elif request.method == 'DELETE':
-        user.delete()
+        usuario.delete()
         return JsonResponse({'mensaje': 'Usuario eliminado'})
     return JsonResponse({'error': 'Método no permitido'}, status=405)
 
@@ -121,11 +126,8 @@ def detalle_usuario(request, user_id):
 @csrf_exempt
 def asignar_rol(request, user_id):
     try:
-        user = User.objects.get(id=user_id)
-        perfil = getattr(user, 'perfil', None)
-        if not perfil:
-            return JsonResponse({'error': 'Usuario sin perfil'}, status=400)
-    except User.DoesNotExist:
+        usuario = Usuario.objects.get(id_usuario=user_id)
+    except Usuario.DoesNotExist:
         return JsonResponse({'error': 'Usuario no encontrado'}, status=404)
     if request.method == 'PUT':
         try:
@@ -137,8 +139,8 @@ def asignar_rol(request, user_id):
                 rol = Rol.objects.get(cod_rol=cod_rol)
             except Rol.DoesNotExist:
                 return JsonResponse({'error': 'Rol no encontrado'}, status=400)
-            perfil.rol = rol
-            perfil.save()
+            usuario.cod_rol = rol
+            usuario.save()
             return JsonResponse({'mensaje': 'Rol asignado'})
         except json.JSONDecodeError:
             return JsonResponse({'error': 'JSON inválido'}, status=400)
@@ -159,36 +161,37 @@ def lista_empleados(request):
         empleados = Empleado.objects.all()
         data = [{
             'cod_empleado': e.cod_empleado,
-            'usuario': usuario_a_dict(e.usuario),
+            'usuario': usuario_a_dict(e.id_usuario),
             'cargo': e.cargo,
             'turno': e.turno,
-            'fecha_contratacion': e.fecha_contratacion.isoformat() if e.fecha_contratacion else None,
-            'notas': e.notas
         } for e in empleados]
         return JsonResponse(data, safe=False)
     elif request.method == 'POST':
         try:
             data = json.loads(request.body)
-            user_id = data.get('user_id')
+            cod_empleado = data.get('cod_empleado')
+            user_id = data.get('id_usuario')
             cargo = data.get('cargo')
             turno = data.get('turno')
-            fecha_contratacion = data.get('fecha_contratacion')
-            notas = data.get('notas', '')
-            if not all([user_id, cargo, turno]):
-                return JsonResponse({'error': 'Campos requeridos: user_id, cargo, turno'}, status=400)
+            if not all([cod_empleado, user_id, cargo, turno]):
+                return JsonResponse({'error': 'Campos requeridos: cod_empleado, id_usuario, cargo, turno'}, status=400)
             try:
-                user = User.objects.get(id=user_id)
-            except User.DoesNotExist:
+                usuario = Usuario.objects.get(id_usuario=user_id)
+            except Usuario.DoesNotExist:
                 return JsonResponse({'error': 'Usuario no encontrado'}, status=400)
-            if hasattr(user, 'empleado_perfil'):
+            if hasattr(usuario, 'empleado'):
                 return JsonResponse({'error': 'Usuario ya es empleado'}, status=400)
             empleado = Empleado.objects.create(
-                usuario=user, cargo=cargo, turno=turno,
-                fecha_contratacion=fecha_contratacion, notas=notas
+                cod_empleado=cod_empleado,
+                id_usuario=usuario,
+                cargo=cargo,
+                turno=turno
             )
             return JsonResponse({'mensaje': 'Empleado creado', 'cod_empleado': empleado.cod_empleado}, status=201)
         except json.JSONDecodeError:
             return JsonResponse({'error': 'JSON inválido'}, status=400)
+        except Exception as e:
+            return JsonResponse({'error': str(e)}, status=400)
     return JsonResponse({'error': 'Método no permitido'}, status=405)
 
 
@@ -201,11 +204,9 @@ def detalle_empleado(request, employee_id):
     if request.method == 'GET':
         data = {
             'cod_empleado': empleado.cod_empleado,
-            'usuario': usuario_a_dict(empleado.usuario),
+            'usuario': usuario_a_dict(empleado.id_usuario),
             'cargo': empleado.cargo,
             'turno': empleado.turno,
-            'fecha_contratacion': empleado.fecha_contratacion.isoformat() if empleado.fecha_contratacion else None,
-            'notas': empleado.notas
         }
         return JsonResponse(data)
     elif request.method == 'PUT':
@@ -213,8 +214,6 @@ def detalle_empleado(request, employee_id):
             data = json.loads(request.body)
             empleado.cargo = data.get('cargo', empleado.cargo)
             empleado.turno = data.get('turno', empleado.turno)
-            empleado.fecha_contratacion = data.get('fecha_contratacion', empleado.fecha_contratacion)
-            empleado.notas = data.get('notas', empleado.notas)
             empleado.save()
             return JsonResponse({'mensaje': 'Empleado actualizado'})
         except json.JSONDecodeError:
@@ -231,34 +230,37 @@ def lista_clientes(request):
         clientes = Cliente.objects.all()
         data = [{
             'cod_cliente': c.cod_cliente,
-            'usuario': usuario_a_dict(c.usuario),
-            'correo_contacto': c.correo_contacto,
-            'puntos_fidelidad': c.puntos_fidelidad,
-            'notas': c.notas
+            'usuario': usuario_a_dict(c.id_usuario),
+            'telefono': c.telefono,
+            'direccion': c.direccion,
         } for c in clientes]
         return JsonResponse(data, safe=False)
     elif request.method == 'POST':
         try:
             data = json.loads(request.body)
-            user_id = data.get('user_id')
-            correo_contacto = data.get('correo_contacto', '')
-            puntos_fidelidad = data.get('puntos_fidelidad', 0)
-            notas = data.get('notas', '')
-            if not user_id:
-                return JsonResponse({'error': 'Campo requerido: user_id'}, status=400)
+            cod_cliente = data.get('cod_cliente')
+            user_id = data.get('id_usuario')
+            telefono = data.get('telefono')
+            direccion = data.get('direccion')
+            if not all([cod_cliente, user_id, telefono, direccion]):
+                return JsonResponse({'error': 'Campos requeridos: cod_cliente, id_usuario, telefono, direccion'}, status=400)
             try:
-                user = User.objects.get(id=user_id)
-            except User.DoesNotExist:
+                usuario = Usuario.objects.get(id_usuario=user_id)
+            except Usuario.DoesNotExist:
                 return JsonResponse({'error': 'Usuario no encontrado'}, status=400)
-            if hasattr(user, 'cliente_perfil'):
+            if hasattr(usuario, 'cliente'):
                 return JsonResponse({'error': 'Usuario ya es cliente'}, status=400)
             cliente = Cliente.objects.create(
-                usuario=user, correo_contacto=correo_contacto,
-                puntos_fidelidad=puntos_fidelidad, notas=notas
+                cod_cliente=cod_cliente,
+                id_usuario=usuario,
+                telefono=telefono,
+                direccion=direccion
             )
             return JsonResponse({'mensaje': 'Cliente creado', 'cod_cliente': cliente.cod_cliente}, status=201)
         except json.JSONDecodeError:
             return JsonResponse({'error': 'JSON inválido'}, status=400)
+        except Exception as e:
+            return JsonResponse({'error': str(e)}, status=400)
     return JsonResponse({'error': 'Método no permitido'}, status=405)
 
 
@@ -271,18 +273,16 @@ def detalle_cliente(request, customer_id):
     if request.method == 'GET':
         data = {
             'cod_cliente': cliente.cod_cliente,
-            'usuario': usuario_a_dict(cliente.usuario),
-            'correo_contacto': cliente.correo_contacto,
-            'puntos_fidelidad': cliente.puntos_fidelidad,
-            'notas': cliente.notas
+            'usuario': usuario_a_dict(cliente.id_usuario),
+            'telefono': cliente.telefono,
+            'direccion': cliente.direccion,
         }
         return JsonResponse(data)
     elif request.method == 'PUT':
         try:
             data = json.loads(request.body)
-            cliente.correo_contacto = data.get('correo_contacto', cliente.correo_contacto)
-            cliente.puntos_fidelidad = data.get('puntos_fidelidad', cliente.puntos_fidelidad)
-            cliente.notas = data.get('notas', cliente.notas)
+            cliente.telefono = data.get('telefono', cliente.telefono)
+            cliente.direccion = data.get('direccion', cliente.direccion)
             cliente.save()
             return JsonResponse({'mensaje': 'Cliente actualizado'})
         except json.JSONDecodeError:
