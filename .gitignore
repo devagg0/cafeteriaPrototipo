@@ -1,0 +1,80 @@
+# Python
+*.py[cod]
+__pycache__/
+*.so
+*.egg
+*.egg-info/
+.eggs/
+*.manifest
+*.spec
+
+# Virtual environment
+venv/
+ENV/
+env/
+.venv/
+
+# Django
+*.log
+*.pot
+*.pyc
+*.pyo
+*.pyd
+*.sqlite3
+db.sqlite3
+/media
+/staticfiles
+
+# Environment variables and secrets
+.env
+.env.*
+*.env
+
+# PyCharm/IDE
+.idea/
+.vscode/
+*.iml
+
+# MacOS
+.DS_Store
+
+# Windows
+Thumbs.db
+ehthumbs.db
+
+# Distribution / packaging
+build/
+dist/
+htmlcov/
+.coverage
+coverage.xml
+*.cover
+*.py,cover
+.cache
+nosetests.xml
+pytest_cache/
+
+# VS Code workspace files
+*.code-workspace
+
+# Logs
+*.log
+
+# Local settings
+local_settings.py
+
+# Backup files
+*.bak
+*~
+
+# JetBrains
+*.iws
+*.ipr
+*.class
+
+# Production
+*.env.local
+
+# Django migrations (optional: keep if you want them in git)
+# **/migrations/*.py[cod]
+# **/migrations/__pycache__/
