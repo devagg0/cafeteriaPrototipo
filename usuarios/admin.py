@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Rol, Usuario, Empleado, Cliente
+from .models import Rol, Usuario, Empleado, Cliente, Bitacora
 
 
 @admin.register(Rol)
@@ -26,4 +26,11 @@ class EmpleadoAdmin(admin.ModelAdmin):
 class ClienteAdmin(admin.ModelAdmin):
     list_display = ('cod_cliente', 'id_usuario', 'telefono')
     search_fields = ('id_usuario__nombre', 'telefono')
+
+
+@admin.register(Bitacora)
+class BitacoraAdmin(admin.ModelAdmin):
+    list_display = ('usuario', 'accion', 'timestamp')
+    search_fields = ('usuario__nombre', 'accion')
+    list_filter = ('accion', 'timestamp')
 
