@@ -360,49 +360,65 @@ def usuario_a_dict(usuario):
 
 @csrf_exempt
 def lista_usuarios(request):
+
     if request.method == 'GET':
         usuario, error_response = obtener_usuario_desde_token(request)
         if error_response:
             return error_response
+
         if usuario.cod_rol.cod_rol != 'admin':
             return JsonResponse({'error': 'Acceso denegado: solo admin'}, status=403)
 
         usuarios = Usuario.objects.all()
         data = [usuario_a_dict(u) for u in usuarios]
         registrar_bitacora(usuario, 'consulta usuarios')
+
         return JsonResponse(data, safe=False)
 
-    elif request.method == 'POST':
-        usuario, error_response = obtener_usuario_desde_token(request)
-        if error_response:
-            return error_response
-        if usuario.cod_rol.cod_rol != 'admin':
-            return JsonResponse({'error': 'Acceso denegado: solo admin'}, status=403)
 
+    elif request.method == 'POST':
         try:
             data = json.loads(request.body)
+
             nombre = data.get('nombre')
             correo = data.get('correo')
             contrasena = data.get('contrasena')
-            cod_rol = data.get('cod_rol')
-            if not all([nombre, correo, contrasena, cod_rol]):
-                return JsonResponse({'error': 'Campos requeridos: nombre, correo, contrasena, cod_rol'}, status=400)
+            cod_rol = data.get('cod_rol', 'cliente')  # por defecto cliente
+
+            # Validación básica
+            if not nombre or not correo or not contrasena:
+                return JsonResponse({
+                    'error': 'Campos requeridos: nombre, correo, contrasena'
+                }, status=400)
+
+            # Validar correo único
             if Usuario.objects.filter(correo=correo).exists():
                 return JsonResponse({'error': 'Correo ya registrado'}, status=400)
+
+            # Obtener rol
             try:
                 rol = Rol.objects.get(cod_rol=cod_rol)
             except Rol.DoesNotExist:
-                return JsonResponse({'error': 'Rol no encontrado'}, status=400)
+                return JsonResponse({'error': 'Rol no válido'}, status=400)
+
+            # Crear usuario
             usuario_nuevo = Usuario.objects.create(
                 nombre=nombre,
                 correo=correo,
                 contrasena=hashear_contrasena(contrasena),
                 cod_rol=rol
             )
-            registrar_bitacora(usuario, 'crea usuario', f'Usuario: {usuario_nuevo.nombre}')
-            return JsonResponse({'mensaje': 'Usuario creado', 'id_usuario': usuario_nuevo.id_usuario}, status=201)
+
+            return JsonResponse({
+                'mensaje': 'Usuario creado',
+                'id_usuario': usuario_nuevo.id_usuario
+            }, status=201)
         except json.JSONDecodeError:
             return JsonResponse({'error': 'JSON inválido'}, status=400)
+        except Exception as e:
+            return JsonResponse({'error': str(e)}, status=500)
+        
+        
     return JsonResponse({'error': 'Método no permitido'}, status=405)
 
 

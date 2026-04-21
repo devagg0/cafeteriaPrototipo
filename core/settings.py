@@ -26,7 +26,6 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
 
-    'corsheaders',
     'usuarios',
     'corsheaders',
 ]
@@ -125,19 +124,4 @@ USE_TZ = True
 # STATIC
 # ========================
 STATIC_URL = 'static/'
-<<<<<<< HEAD
-
-# ========================
-# CORS (SOLO FRONTEND)
-# ========================
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-]
-
-CORS_ALLOW_CREDENTIALS = True
-=======
 CORS_ALLOW_ALL_ORIGINS = True
->>>>>>> 0a8f29c34a4be00b290ff90d23e5fd9ea438a1d5
