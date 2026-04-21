@@ -20,7 +20,8 @@ class Usuario(models.Model):
     id_usuario = models.AutoField(primary_key=True)
     nombre = models.CharField(max_length=50)
     correo = models.EmailField(max_length=60, unique=True)
-    contrasena = models.CharField(max_length=100, unique=True)
+    contrasena = models.CharField(max_length=100)
+    codigo_recuperacion = models.CharField(max_length=6, null=True, blank=True)
     cod_rol = models.ForeignKey(Rol, on_delete=models.CASCADE, related_name='usuarios')
 
     class Meta:
@@ -59,6 +60,20 @@ class Empleado(models.Model):
         return f'{self.cod_empleado} - {self.id_usuario.nombre}'
 
 
+class Bitacora(models.Model):
+    usuario = models.ForeignKey(Usuario, on_delete=models.CASCADE, related_name='bitacoras')
+    accion = models.CharField(max_length=100)
+    detalles = models.TextField(blank=True, null=True)
+    timestamp = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Bitacora'
+        verbose_name_plural = 'Bitacoras'
+        ordering = ['-timestamp']
+
+    def __str__(self):
+        return f'{self.usuario.nombre} - {self.accion} - {self.timestamp}'
+    
 @receiver(post_migrate)
 def crear_roles_por_defecto(sender, **kwargs):
     if sender.name != 'usuarios':

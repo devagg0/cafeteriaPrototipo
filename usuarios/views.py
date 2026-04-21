@@ -1,14 +1,29 @@
 import json
 import hashlib
+import random
+import jwt
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from .models import Rol, Usuario, Empleado, Cliente
-
+from django.core.mail import send_mail
+from django.conf import settings
+from datetime import datetime, timedelta
 
 def hashear_contrasena(contrasena):
     """Hashea una contraseña con SHA-256"""
     return hashlib.sha256(contrasena.encode()).hexdigest()
 
+def generar_token(usuario):
+    payload = {
+        'id_usuario': usuario.id_usuario,
+        'rol': usuario.cod_rol.cod_rol,
+        'exp': datetime.utcnow() + timedelta(hours=12),
+        'iat': datetime.utcnow(),
+    }
+    token = jwt.encode(payload, settings.SECRET_KEY, algorithm='HS256')
+    if isinstance(token, bytes):
+        token = token.decode('utf-8')
+    return token
 
 @csrf_exempt
 def login_view(request):
@@ -21,11 +36,13 @@ def login_view(request):
                 return JsonResponse({'error': 'Campos requeridos: correo, contrasena'}, status=400)
             try:
                 usuario = Usuario.objects.get(correo=correo, contrasena=hashear_contrasena(contrasena))
+                token = generar_token(usuario)
                 return JsonResponse({
                     'mensaje': 'Inicio de sesión exitoso',
                     'id_usuario': usuario.id_usuario,
                     'nombre': usuario.nombre,
-                    'rol': usuario.cod_rol.nombre
+                    'rol': usuario.cod_rol.nombre,
+                    'token': token
                 })
             except Usuario.DoesNotExist:
                 return JsonResponse({'error': 'Credenciales inválidas'}, status=400)
@@ -290,4 +307,31 @@ def detalle_cliente(request, customer_id):
     elif request.method == 'DELETE':
         cliente.delete()
         return JsonResponse({'mensaje': 'Cliente eliminado'})
+    return JsonResponse({'error': 'Método no permitido'}, status=405)
+
+
+@csrf_exempt
+def recuperar_password(request):
+    if request.method == 'POST':
+        data = json.loads(request.body)
+        correo = data.get('correo')
+
+        try:
+            usuario = Usuario.objects.get(correo=correo)
+
+            codigo = str(random.randint(100000, 999999))
+            usuario.codigo_recuperacion = codigo
+            usuario.save()
+
+            send_mail(
+                'Código de recuperación',
+                f'Tu código es: {codigo}',
+                None,
+                [correo],
+            )
+
+            return JsonResponse({'mensaje': 'Código enviado'})
+        except Usuario.DoesNotExist:
+            return JsonResponse({'error': 'Usuario no encontrado'}, status=404)
+
     return JsonResponse({'error': 'Método no permitido'}, status=405)
