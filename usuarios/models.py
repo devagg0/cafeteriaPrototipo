@@ -4,7 +4,7 @@ from django.dispatch import receiver
 
 
 class Rol(models.Model):
-    cod_rol = models.CharField(max_length=5, primary_key=True)
+    cod_rol = models.CharField(max_length=10, primary_key=True)
     nombre = models.CharField(max_length=20)
     descripcion = models.CharField(max_length=100, blank=True)
 
@@ -21,8 +21,9 @@ class Usuario(models.Model):
     nombre = models.CharField(max_length=50)
     correo = models.EmailField(max_length=60, unique=True)
     contrasena = models.CharField(max_length=100)
-    codigo_recuperacion = models.CharField(max_length=6, null=True, blank=True)
     cod_rol = models.ForeignKey(Rol, on_delete=models.CASCADE, related_name='usuarios')
+
+    codigo_recuperacion = models.CharField(max_length=6, null=True, blank=True)
 
     class Meta:
         verbose_name = 'Usuario'
@@ -73,7 +74,8 @@ class Bitacora(models.Model):
 
     def __str__(self):
         return f'{self.usuario.nombre} - {self.accion} - {self.timestamp}'
-    
+
+
 @receiver(post_migrate)
 def crear_roles_por_defecto(sender, **kwargs):
     if sender.name != 'usuarios':
@@ -81,8 +83,9 @@ def crear_roles_por_defecto(sender, **kwargs):
 
     roles = [
         ('admin', 'Admin', 'Administrador con acceso completo'),
-        ('emp', 'Empleado', 'Usuario con permisos de empleado'),
-        ('cli', 'Cliente', 'Usuario con permisos de cliente'),
+        ('mesero', 'Mesero', 'Rol para gestión de servicio'),
+        ('cocinero', 'Cocinero', 'Rol para gestión de cocina'),
+        ('cliente', 'Cliente', 'Usuario con permisos de cliente'),
     ]
     for cod, nombre, descripcion in roles:
         Rol.objects.get_or_create(cod_rol=cod, defaults={'nombre': nombre, 'descripcion': descripcion})

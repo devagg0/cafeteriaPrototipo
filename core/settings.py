@@ -28,13 +28,14 @@ INSTALLED_APPS = [
 
     'corsheaders',
     'usuarios',
+    'corsheaders',
 ]
 
 # ========================
 # MIDDLEWARE
 # ========================
 MIDDLEWARE = [
-    'corsheaders.middleware.CorsMiddleware',  # siempre primero
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -71,6 +72,9 @@ WSGI_APPLICATION = 'core.wsgi.application'
 # ========================
 DB_NAME = os.getenv('DB_NAME')
 
+# Database
+# https://docs.djangoproject.com/en/6.0/ref/settings/#databases
+DB_NAME = os.getenv('DB_NAME')
 if DB_NAME:
     DATABASES = {
         'default': {
@@ -90,22 +94,18 @@ else:
         }
     }
 
-# ========================
-# EMAIL (RECUPERACIÓN)
-# ========================
+# Email settings
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 587
 EMAIL_USE_TLS = True
+EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
 
-EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER')
-EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD')
 
-DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
+# Password validation
+# https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators
 
-# ========================
-# PASSWORDS
-# ========================
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
     {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator'},
@@ -125,6 +125,7 @@ USE_TZ = True
 # STATIC
 # ========================
 STATIC_URL = 'static/'
+<<<<<<< HEAD
 
 # ========================
 # CORS (SOLO FRONTEND)
@@ -137,3 +138,6 @@ CORS_ALLOWED_ORIGINS = [
 ]
 
 CORS_ALLOW_CREDENTIALS = True
+=======
+CORS_ALLOW_ALL_ORIGINS = True
+>>>>>>> 0a8f29c34a4be00b290ff90d23e5fd9ea438a1d5

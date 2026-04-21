@@ -4,6 +4,11 @@ from . import views
 urlpatterns = [
     path('login/', views.login_view, name='api-login'),
     path('logout/', views.logout_view, name='api-logout'),
+    path('recuperar-password/', views.recuperar_password, name='api-password-recovery'),
+    path('verificar-codigo/', views.verificar_codigo, name='api-verify-code'),
+    path('nueva-password/', views.nueva_password, name='api-reset-password'),
+    path('cambiar-password/', views.cambiar_password, name='api-change-password'),
+    path('bitacora/', views.lista_bitacora, name='api-bitacora'),
 
     path('usuarios/', views.lista_usuarios, name='api-user-list'),
     path('usuarios/<int:user_id>/', views.detalle_usuario, name='api-user-detail'),

@@ -1,6 +1,5 @@
 from django.contrib import admin
 from .models import Rol, Usuario, Empleado, Cliente, Bitacora
-from .models import Bitacora
 
 
 @admin.register(Rol)
@@ -34,3 +33,4 @@ class BitacoraAdmin(admin.ModelAdmin):
     list_display = ('usuario', 'accion', 'timestamp')
     search_fields = ('usuario__nombre', 'accion')
     list_filter = ('accion', 'timestamp')
+
