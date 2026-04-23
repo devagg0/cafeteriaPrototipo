@@ -35,7 +35,7 @@ class Usuario(models.Model):
 
 class Cliente(models.Model):
     cod_cliente = models.CharField(max_length=6, primary_key=True)
-    telefono = models.CharField(max_length=15, unique=True)
+    telefono = models.CharField(max_length=15,null = True,blank=True)
     direccion = models.CharField(max_length=100)
     id_usuario = models.OneToOneField(Usuario, on_delete=models.CASCADE, related_name='cliente', db_column='id_usuario')
 

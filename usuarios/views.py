@@ -3,6 +3,9 @@ import hashlib
 import jwt
 import random
 import re
+import uuid 
+from django.utils import timezone
+from datetime import timedelta
 from datetime import datetime, timedelta
 from django.conf import settings
 from django.core.mail import send_mail
@@ -75,7 +78,7 @@ def requiere_token_y_rol(roles_permitidos=None):
             if error_response:
                 return error_response
 
-            if roles_permitidos and usuario.cod_rol.cod_rol not in roles_permitidos:
+            if roles_permitidos and usuario.cod_rol.cod_rol not in ['admin', 'empleado', 'cliente']:
                 return JsonResponse({'error': 'Acceso denegado: rol insuficiente'}, status=403)
 
             request.usuario_autenticado = usuario
@@ -111,6 +114,12 @@ def validar_acceso_empleado(request, empleado_id):
     return False
 
 
+# 🔐 Control de intentos de login (en memoria)
+INTENTOS_LOGIN = {}
+
+MAX_INTENTOS = 3
+TIEMPO_BLOQUEO_MIN = 10
+
 @csrf_exempt
 def login_view(request):
     if request.method == 'POST':
@@ -126,13 +135,31 @@ def login_view(request):
                     status=400
                 )
 
+            # 🔒 1. VERIFICAR SI ESTÁ BLOQUEADO (AQUÍ)
+            registro = INTENTOS_LOGIN.get(correo)
+
+            if registro:
+                bloqueado_hasta = registro.get('bloqueado_hasta')
+
+                if bloqueado_hasta and timezone.now() < bloqueado_hasta:
+                    minutos_restantes = int((bloqueado_hasta - timezone.now()).total_seconds() / 60)
+                    return JsonResponse({
+                        'error': f'Demasiados intentos. Intenta nuevamente en {minutos_restantes} minutos.'
+                    }, status=403)
+
             try:
                 usuario = Usuario.objects.get(
                     correo=correo,
                     contrasena=hashear_contrasena(contrasena)
                 )
+
+                # ✅ LOGIN CORRECTO → RESETEAR INTENTOS (AQUÍ)
+                if correo in INTENTOS_LOGIN:
+                    del INTENTOS_LOGIN[correo]
+
                 token = generar_token(usuario)
                 registrar_bitacora(usuario, 'login')
+
                 return JsonResponse({
                     'mensaje': 'Login exitoso',
                     'token': token,
@@ -146,10 +173,28 @@ def login_view(request):
                 })
 
             except Usuario.DoesNotExist:
-                return JsonResponse(
-                    {'error': 'Credenciales inválidas'},
-                    status=400
-                )
+
+                # ❌ LOGIN FALLIDO → SUMAR INTENTOS (AQUÍ)
+                registro = INTENTOS_LOGIN.get(correo, {'intentos': 0})
+                registro['intentos'] += 1
+
+                # 🔥 SI LLEGA AL MÁXIMO → BLOQUEAR
+                if registro['intentos'] >= MAX_INTENTOS:
+                    registro['bloqueado_hasta'] = timezone.now() + timedelta(minutes=TIEMPO_BLOQUEO_MIN)
+                    INTENTOS_LOGIN[correo] = registro
+
+                    return JsonResponse({
+                        'error': 'Cuenta bloqueada por demasiados intentos. Intenta en 10 minutos.'
+                    }, status=403)
+
+                # 🔁 GUARDAR INTENTOS
+                INTENTOS_LOGIN[correo] = registro
+
+                restantes = MAX_INTENTOS - registro['intentos']
+
+                return JsonResponse({
+                    'error': f'Credenciales inválidas. Te quedan {restantes} intentos.'
+                }, status=400)
 
         except json.JSONDecodeError:
             return JsonResponse(
@@ -163,6 +208,7 @@ def login_view(request):
         {'error': 'Método no permitido'},
         status=405
     )
+    
 @csrf_exempt
 def recuperar_password(request):
     if request.method == 'POST':
@@ -175,34 +221,31 @@ def recuperar_password(request):
 
             try:
                 usuario = Usuario.objects.get(correo=correo)
-            except Usuario.DoesNotExist:
-                return JsonResponse({'error': 'Usuario no encontrado'}, status=404)
 
-            codigo = ''.join(random.choices('0123456789', k=6))
-            usuario.codigo_recuperacion = codigo
-            usuario.save()
+                # 🔐 generar código
+                codigo = ''.join(random.choices('0123456789', k=6))
+                usuario.codigo_recuperacion = codigo
+                usuario.save()
 
-            email_body = f'Código de recuperación: {codigo}'
-            email_sent = False
-            if settings.EMAIL_HOST_USER and settings.EMAIL_HOST_PASSWORD:
-                try:
+                # 📩 enviar correo
+                if settings.EMAIL_HOST_USER and settings.EMAIL_HOST_PASSWORD:
                     send_mail(
                         'Recuperación de contraseña',
-                        email_body,
-                        settings.EMAIL_HOST_USER,
+                        f'Tu código de recuperación es: {codigo}',
+                        f'NO REPLY <{settings.EMAIL_HOST_USER}>',
                         [usuario.correo],
-                        fail_silently=False,
+                        fail_silently=True,
                     )
-                    email_sent = True
-                except Exception:
-                    email_sent = False
 
+            except Usuario.DoesNotExist:
+                # 🔒 no hacer nada (seguridad)
+                pass
+
+            # 🔥 respuesta SIEMPRE igual
             return JsonResponse({
-                'mensaje': 'Código de recuperación generado',
-                'correo': usuario.correo,
-                'codigo': codigo,
-                'email_enviado': email_sent,
+                'mensaje': 'Revisa tu bandeja de entrada, se te envio el codigo'
             })
+
         except json.JSONDecodeError:
             return JsonResponse({'error': 'JSON inválido'}, status=400)
 
@@ -302,23 +345,20 @@ def lista_bitacora(request):
     if error_response:
         return error_response
 
-    if usuario_autenticado.cod_rol.cod_rol != 'admin':
-        return JsonResponse({'error': 'Acceso denegado: solo admin'}, status=403)
-
     if request.method == 'GET':
-        bitacoras = Bitacora.objects.select_related('usuario').all()
-        data = [
-            {
-                'id': b.id,
-                'usuario_id': b.usuario.id_usuario,
-                'usuario_nombre': b.usuario.nombre,
-                'accion': b.accion,
-                'detalles': b.detalles,
-                'timestamp': b.timestamp,
-            }
-            for b in bitacoras
-        ]
-        registrar_bitacora(usuario_autenticado, 'consulta bitacora')
+        if usuario_autenticado.cod_rol.cod_rol != 'admin':
+            return JsonResponse({'error': 'Acceso denegado'}, status=403)
+
+        registros = Bitacora.objects.select_related('id_usuario').order_by('-fecha')
+
+        data = [{
+    'id': b.id_bitacora,
+    'usuario': b.id_usuario.nombre if b.id_usuario else 'N/A',
+    'accion': b.accion or '',
+    'detalle': b.detalle or '',
+    'fecha': b.fecha.strftime('%Y-%m-%d %H:%M:%S') if b.fecha else ''
+         } for b in registros]
+
         return JsonResponse(data, safe=False)
 
     return JsonResponse({'error': 'Método no permitido'}, status=405)
@@ -408,7 +448,18 @@ def lista_usuarios(request):
                 contrasena=hashear_contrasena(contrasena),
                 cod_rol=rol
             )
-
+            
+             # 🔥 CREAR CLIENTE AUTOMÁTICO
+            if rol.cod_rol == 'cliente':
+             from .models import Cliente
+             Cliente.objects.create(
+        cod_cliente=str(uuid.uuid4())[:6],
+        telefono=None,
+        direccion='',
+        id_usuario=usuario_nuevo
+    )
+             
+             
             return JsonResponse({
                 'mensaje': 'Usuario creado',
                 'id_usuario': usuario_nuevo.id_usuario
@@ -516,7 +567,7 @@ def lista_empleados(request):
         return error_response
 
     if request.method == 'GET':
-        if usuario_autenticado.cod_rol.cod_rol not in ['admin', 'mesero', 'cocinero']:
+        if usuario_autenticado.cod_rol.cod_rol not in ['admin', 'mesero', 'cocinero', 'emp']:
             return JsonResponse({'error': 'Acceso denegado'}, status=403)
 
         empleados = Empleado.objects.all()
@@ -526,6 +577,7 @@ def lista_empleados(request):
             'cargo': e.cargo,
             'turno': e.turno,
         } for e in empleados]
+
         registrar_bitacora(usuario_autenticado, 'consulta empleados')
         return JsonResponse(data, safe=False)
 
@@ -535,30 +587,56 @@ def lista_empleados(request):
 
         try:
             data = json.loads(request.body)
-            cod_empleado = data.get('cod_empleado')
-            user_id = data.get('id_usuario')
+
+            nombre = data.get('nombre')
+            correo = data.get('correo')
+            contrasena = data.get('contrasena')
             cargo = data.get('cargo')
-            turno = data.get('turno')
-            if not all([cod_empleado, user_id, cargo, turno]):
-                return JsonResponse({'error': 'Campos requeridos: cod_empleado, id_usuario, cargo, turno'}, status=400)
-            try:
-                usuario = Usuario.objects.get(id_usuario=user_id)
-            except Usuario.DoesNotExist:
-                return JsonResponse({'error': 'Usuario no encontrado'}, status=400)
-            if hasattr(usuario, 'empleado'):
-                return JsonResponse({'error': 'Usuario ya es empleado'}, status=400)
+
+            if not all([nombre, correo, contrasena, cargo]):
+                return JsonResponse({'error': 'Faltan datos'}, status=400)
+
+            # 🔥 evitar duplicados
+            if Usuario.objects.filter(correo=correo).exists():
+                return JsonResponse({'error': 'El correo ya existe'}, status=400)
+
+            # 🔥 rol empleado
+            rol = Rol.objects.get(cod_rol='emp')
+
+            # 🔥 crear usuario
+            usuario = Usuario.objects.create(
+                nombre=nombre,
+                correo=correo,
+                contrasena=hashear_contrasena(contrasena),
+                cod_rol=rol
+            )
+
+            # 🔥 crear empleado
+            import uuid
             empleado = Empleado.objects.create(
-                cod_empleado=cod_empleado,
+                cod_empleado=str(uuid.uuid4())[:6],
                 id_usuario=usuario,
                 cargo=cargo,
-                turno=turno
+                turno='mañana'
             )
-            registrar_bitacora(usuario_autenticado, 'crea empleado', f'Empleado: {empleado.cod_empleado}')
-            return JsonResponse({'mensaje': 'Empleado creado', 'cod_empleado': empleado.cod_empleado}, status=201)
+
+            registrar_bitacora(
+                usuario_autenticado,
+                'crea empleado',
+                f'Empleado: {empleado.cod_empleado}'
+            )
+
+            return JsonResponse({
+                'mensaje': 'Empleado creado',
+                'cod_empleado': empleado.cod_empleado
+            }, status=201)
+
         except json.JSONDecodeError:
             return JsonResponse({'error': 'JSON inválido'}, status=400)
+
         except Exception as e:
-            return JsonResponse({'error': str(e)}, status=400)
+            return JsonResponse({'error': str(e)}, status=500)
+
     return JsonResponse({'error': 'Método no permitido'}, status=405)
 
 
@@ -613,9 +691,9 @@ def detalle_empleado(request, employee_id):
 
 @csrf_exempt
 def lista_clientes(request):
-    usuario_autenticado, error_response = obtener_usuario_desde_token(request)
-    if error_response:
-        return error_response
+    clientes = Usuario.objects.filter(cod_rol__cod_rol='cliente')
+    data = [usuario_a_dict(u) for u in clientes]
+    return JsonResponse(data, safe=False)
 
     if request.method == 'GET':
         if usuario_autenticado.cod_rol.cod_rol not in ['admin', 'mesero', 'cocinero', 'cliente']:
@@ -667,7 +745,7 @@ def lista_clientes(request):
             cliente = Cliente.objects.create(
                 cod_cliente=cod_cliente,
                 id_usuario=usuario,
-                telefono=telefono,
+                telefono=None,
                 direccion=direccion
             )
             registrar_bitacora(usuario_autenticado, 'crea cliente', f'Cliente: {cliente.cod_cliente}')
@@ -731,3 +809,51 @@ def detalle_cliente(request, customer_id):
         return JsonResponse({'mensaje': 'Cliente eliminado'})
 
     return JsonResponse({'error': 'Método no permitido'}, status=405)
+
+@csrf_exempt
+def registro_cliente(request):
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body)
+
+            nombre = data.get('nombre')
+            correo = data.get('correo')
+            contrasena = data.get('contrasena')
+
+            if not all([nombre, correo, contrasena]):
+                return JsonResponse({'error': 'Datos incompletos'}, status=400)
+
+            if Usuario.objects.filter(correo=correo).exists():
+                return JsonResponse({'error': 'Correo ya registrado'}, status=400)
+
+            # 🔥 rol fijo cliente
+            rol_cliente = Rol.objects.get(cod_rol='cliente')
+
+            # 🔥 crear usuario
+            usuario = Usuario.objects.create(
+                nombre=nombre,
+                correo=correo,
+                contrasena=hashear_contrasena(contrasena),
+                cod_rol=rol_cliente
+            )
+
+            # 🔥 crear cliente (SIN romper registro si falla)
+            try:
+                Cliente.objects.create(
+                    cod_cliente=f"C{usuario.id_usuario}",
+                    id_usuario=usuario,
+                    telefono=None,
+                    direccion=''
+                )
+            except Exception as e:
+                print("Error creando cliente:", str(e))
+
+            return JsonResponse({
+                'mensaje': 'Usuario registrado correctamente',
+                'id_usuario': usuario.id_usuario
+            }, status=201)
+
+        except Exception as e:
+            return JsonResponse({'error': str(e)}, status=400)
+
+    return JsonResponse({'error': 'Método no permitido'}, status=405)    
