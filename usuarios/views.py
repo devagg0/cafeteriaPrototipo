@@ -346,19 +346,19 @@ def lista_bitacora(request):
         return error_response
 
     if request.method == 'GET':
-     if usuario_autenticado.cod_rol.cod_rol != 'admin':
-        return JsonResponse({'error': 'Acceso denegado'}, status=403)
+        if usuario_autenticado.cod_rol.cod_rol != 'admin':
+            return JsonResponse({'error': 'Acceso denegado'}, status=403)
 
-    registros = Bitacora.objects.select_related('usuario').order_by('-timestamp')
+        registros = Bitacora.objects.select_related('usuario').order_by('-timestamp')
 
-    data = [{
-        'usuario': b.usuario.nombre,
-        'accion': b.accion,
-        'detalle': b.detalles,
-        'fecha': b.timestamp.strftime('%d/%m/%Y %H:%M:%S')  # 🔥 fecha + hora bonita
-    } for b in registros]
+        data = [{
+            'usuario': b.usuario.nombre,
+            'accion': b.accion,
+            'detalle': b.detalles,
+            'fecha': b.timestamp.strftime('%d/%m/%Y %H:%M:%S')
+        } for b in registros]
 
-    return JsonResponse(data, safe=False)
+        return JsonResponse(data, safe=False)
 
     return JsonResponse({'error': 'Método no permitido'}, status=405)
 
@@ -700,7 +700,7 @@ def lista_clientes(request):
         return error_response
 
     if request.method == 'GET':
-        if usuario_autenticado.cod_rol.cod_rol not in ['admin', 'mesero', 'cocinero', 'cliente']:
+        if usuario_autenticado.cod_rol.cod_rol not in ['admin', 'mesero', 'cocinero', 'emp', 'cliente']:
             return JsonResponse({'error': 'Acceso denegado'}, status=403)
 
         # Si es cliente, solo ve su propio perfil
