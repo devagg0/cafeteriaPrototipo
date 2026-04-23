@@ -346,20 +346,19 @@ def lista_bitacora(request):
         return error_response
 
     if request.method == 'GET':
-        if usuario_autenticado.cod_rol.cod_rol != 'admin':
-            return JsonResponse({'error': 'Acceso denegado'}, status=403)
+     if usuario_autenticado.cod_rol.cod_rol != 'admin':
+        return JsonResponse({'error': 'Acceso denegado'}, status=403)
 
-        registros = Bitacora.objects.select_related('id_usuario').order_by('-fecha')
+    registros = Bitacora.objects.select_related('usuario').order_by('-timestamp')
 
-        data = [{
-    'id': b.id_bitacora,
-    'usuario': b.id_usuario.nombre if b.id_usuario else 'N/A',
-    'accion': b.accion or '',
-    'detalle': b.detalle or '',
-    'fecha': b.fecha.strftime('%Y-%m-%d %H:%M:%S') if b.fecha else ''
-         } for b in registros]
+    data = [{
+        'usuario': b.usuario.nombre,
+        'accion': b.accion,
+        'detalle': b.detalles,
+        'fecha': b.timestamp.strftime('%d/%m/%Y %H:%M:%S')  # 🔥 fecha + hora bonita
+    } for b in registros]
 
-        return JsonResponse(data, safe=False)
+    return JsonResponse(data, safe=False)
 
     return JsonResponse({'error': 'Método no permitido'}, status=405)
 
@@ -452,11 +451,14 @@ def lista_usuarios(request):
              # 🔥 CREAR CLIENTE AUTOMÁTICO
             if rol.cod_rol == 'cliente':
              from .models import Cliente
+             
+             telefono = str(usuario_nuevo.id_usuario).zfill(8)
+
              Cliente.objects.create(
-        cod_cliente=str(uuid.uuid4())[:6],
-        telefono=None,
-        direccion='',
-        id_usuario=usuario_nuevo
+        cod_cliente=f"C{usuario_nuevo.id_usuario}",
+        id_usuario=usuario_nuevo,
+        telefono=telefono,
+        direccion='Sin dirección'
     )
              
              
@@ -488,7 +490,9 @@ def detalle_usuario(request, user_id):
 
     if request.method == 'GET':
         registrar_bitacora(usuario_autenticado, 'consulta usuario', f'ID: {user_id}')
-        return JsonResponse(usuario_a_dict(usuario))
+        return JsonResponse({
+    'usuario': usuario_a_dict(usuario)
+})
 
     elif request.method == 'PUT':
         try:
@@ -691,9 +695,9 @@ def detalle_empleado(request, employee_id):
 
 @csrf_exempt
 def lista_clientes(request):
-    clientes = Usuario.objects.filter(cod_rol__cod_rol='cliente')
-    data = [usuario_a_dict(u) for u in clientes]
-    return JsonResponse(data, safe=False)
+    usuario_autenticado, error_response = obtener_usuario_desde_token(request)
+    if error_response:
+        return error_response
 
     if request.method == 'GET':
         if usuario_autenticado.cod_rol.cod_rol not in ['admin', 'mesero', 'cocinero', 'cliente']:
@@ -713,7 +717,7 @@ def lista_clientes(request):
                 data = []
         else:
             # Admin y empleados ven todos
-            clientes = Cliente.objects.all()
+            clientes = Cliente.objects.select_related('id_usuario').all()
             data = [{
                 'cod_cliente': c.cod_cliente,
                 'usuario': usuario_a_dict(c.id_usuario),
@@ -732,30 +736,42 @@ def lista_clientes(request):
             data = json.loads(request.body)
             cod_cliente = data.get('cod_cliente')
             user_id = data.get('id_usuario')
-            telefono = data.get('telefono')
             direccion = data.get('direccion')
-            if not all([cod_cliente, user_id, telefono, direccion]):
-                return JsonResponse({'error': 'Campos requeridos: cod_cliente, id_usuario, telefono, direccion'}, status=400)
+
+            if not all([cod_cliente, user_id, direccion]):
+                return JsonResponse({'error': 'Campos requeridos: cod_cliente, id_usuario, direccion'}, status=400)
+
             try:
                 usuario = Usuario.objects.get(id_usuario=user_id)
             except Usuario.DoesNotExist:
                 return JsonResponse({'error': 'Usuario no encontrado'}, status=400)
+
             if hasattr(usuario, 'cliente'):
                 return JsonResponse({'error': 'Usuario ya es cliente'}, status=400)
+
+            # 🔥 TELEFONO AUTOMÁTICO ÚNICO (SOLUCIÓN DEFINITIVA)
+            telefono = str(usuario.id_usuario).zfill(8)
+
             cliente = Cliente.objects.create(
                 cod_cliente=cod_cliente,
                 id_usuario=usuario,
-                telefono=None,
+                telefono=telefono,
                 direccion=direccion
             )
+
             registrar_bitacora(usuario_autenticado, 'crea cliente', f'Cliente: {cliente.cod_cliente}')
-            return JsonResponse({'mensaje': 'Cliente creado', 'cod_cliente': cliente.cod_cliente}, status=201)
+
+            return JsonResponse({
+                'mensaje': 'Cliente creado',
+                'cod_cliente': cliente.cod_cliente
+            }, status=201)
+
         except json.JSONDecodeError:
             return JsonResponse({'error': 'JSON inválido'}, status=400)
         except Exception as e:
             return JsonResponse({'error': str(e)}, status=400)
-    return JsonResponse({'error': 'Método no permitido'}, status=405)
 
+    return JsonResponse({'error': 'Método no permitido'}, status=405)
 
 @csrf_exempt
 def detalle_cliente(request, customer_id):
@@ -839,14 +855,16 @@ def registro_cliente(request):
 
             # 🔥 crear cliente (SIN romper registro si falla)
             try:
-                Cliente.objects.create(
-                    cod_cliente=f"C{usuario.id_usuario}",
-                    id_usuario=usuario,
-                    telefono=None,
-                    direccion=''
-                )
+                 telefono = str(usuario.id_usuario).zfill(8)
+
+                 Cliente.objects.create(
+                   cod_cliente=f"C{usuario.id_usuario}",
+                   id_usuario=usuario,
+                      telefono=telefono,
+                      direccion='Sin dirección'
+                       )
             except Exception as e:
-                print("Error creando cliente:", str(e))
+                 print("Error creando cliente:", e)
 
             return JsonResponse({
                 'mensaje': 'Usuario registrado correctamente',
