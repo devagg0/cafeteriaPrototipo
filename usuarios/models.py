@@ -80,3 +80,16 @@ def crear_roles_por_defecto(sender, **kwargs):
             cod_rol=cod,
             defaults={'nombre': nombre, 'descripcion': descripcion}
         )
+
+    # Crear administrador por defecto si no existe
+    import hashlib
+    admin_rol = Rol.objects.get(cod_rol='admin')
+    correo_admin = 'administrador@gmail.com'
+    if not Usuario.objects.filter(correo=correo_admin).exists():
+        contrasena_hash = hashlib.sha256('adm123'.encode()).hexdigest()
+        Usuario.objects.create(
+            nombre='Administrador Principal',
+            correo=correo_admin,
+            contrasena=contrasena_hash,
+            cod_rol=admin_rol
+        )

@@ -1,0 +1,267 @@
+from rest_framework import viewsets, status
+from rest_framework.decorators import api_view, action
+from rest_framework.response import Response
+from django.db.models import Q
+from datetime import datetime
+from .models import SalaTematica, Mesa, Reserva
+from .serializers import SalaTematicaSerializer, MesaSerializer, ReservaSerializer
+from usuarios.models import Usuario, Cliente
+from usuarios.views import decodificar_token
+
+# --- AUTENTICACIÓN CUSTOM ---
+from rest_framework.authentication import BaseAuthentication
+from rest_framework.exceptions import AuthenticationFailed
+from rest_framework.permissions import BasePermission
+
+class JWTAuthentication(BaseAuthentication):
+    def authenticate(self, request):
+        auth_header = request.headers.get('Authorization')
+        if not auth_header or not auth_header.startswith('Bearer '):
+            return None
+        token = auth_header.split(' ')[1]
+        payload = decodificar_token(token)
+        if isinstance(payload, dict) and payload.get('error'):
+            raise AuthenticationFailed(payload['error'])
+        try:
+            user = Usuario.objects.get(id_usuario=payload.get('user_id'))
+            return (user, token)
+        except Usuario.DoesNotExist:
+            raise AuthenticationFailed('Usuario no encontrado')
+
+class IsAdmin(BasePermission):
+    def has_permission(self, request, view):
+        return bool(request.user and request.user.cod_rol.cod_rol == 'admin')
+
+class IsEmpleadoOrAdmin(BasePermission):
+    def has_permission(self, request, view):
+        return bool(request.user and request.user.cod_rol.cod_rol in ['admin', 'mesero', 'cocinero', 'emp'])
+
+class IsAuthenticatedJWT(BasePermission):
+    def has_permission(self, request, view):
+        return bool(request.user)
+
+# --- VIEWSETS ---
+
+class SalaTematicaViewSet(viewsets.ModelViewSet):
+    queryset = SalaTematica.objects.all()
+    serializer_class = SalaTematicaSerializer
+    authentication_classes = [JWTAuthentication]
+
+    def get_permissions(self):
+        if self.action in ['list', 'retrieve', 'disponibilidad', 'mesas']:
+            return [IsAuthenticatedJWT()]
+        return [IsAdmin()]
+
+    @action(detail=True, methods=['patch'])
+    def estado(self, request, pk=None):
+        sala = self.get_object()
+        # Verificar si hay reservas activas antes de deshabilitar
+        if sala.habilitada and not request.data.get('habilitada', True):
+            reservas_activas = Reserva.objects.filter(sala=sala, estado__in=['pendiente', 'confirmada', 'en_curso']).exists()
+            if reservas_activas:
+                return Response({'error': 'No se puede deshabilitar una sala con reservas activas'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        sala.habilitada = request.data.get('habilitada', sala.habilitada)
+        sala.save()
+        return Response({'mensaje': 'Estado actualizado', 'habilitada': sala.habilitada})
+
+    @action(detail=True, methods=['get'])
+    def disponibilidad(self, request, pk=None):
+        sala = self.get_object()
+        fecha_str = request.query_params.get('fecha')
+        if not fecha_str:
+            return Response({'error': 'Debe proporcionar una fecha (YYYY-MM-DD)'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            fecha = datetime.strptime(fecha_str, '%Y-%m-%d').date()
+        except ValueError:
+            return Response({'error': 'Formato de fecha inválido. Use YYYY-MM-DD'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Horarios fijos
+        horarios = [
+            ("10:00:00", "11:30:00"),
+            ("11:30:00", "13:00:00"),
+            ("13:00:00", "14:30:00"),
+            ("14:30:00", "16:00:00"),
+            ("16:00:00", "17:30:00"),
+            ("17:30:00", "19:00:00"),
+            ("19:00:00", "20:30:00"),
+            ("20:30:00", "22:00:00"),
+        ]
+
+
+
+        mesas_activas = Mesa.objects.filter(sala=sala, activa=True)
+        reservas_dia = Reserva.objects.filter(sala=sala, fecha=fecha, estado__in=['pendiente', 'confirmada', 'en_curso'])
+
+        disponibilidad = []
+        for inicio, fin in horarios:
+            mesas_reservadas_ids = reservas_dia.filter(hora_inicio=inicio).values_list('mesa_id', flat=True)
+            
+            mesas_info = []
+            for m in mesas_activas:
+                mesas_info.append({
+                    'id': m.id,
+                    'nombre': m.nombre,
+                    'capacidad': m.capacidad,
+                    'disponible': m.id not in mesas_reservadas_ids
+                })
+            
+            disponibilidad.append({
+                'hora_inicio': inicio,
+                'hora_fin': fin,
+                'mesas': mesas_info
+            })
+
+        return Response(disponibilidad)
+
+    @action(detail=True, methods=['get'])
+    def mesas(self, request, pk=None):
+        sala = self.get_object()
+        mesas = Mesa.objects.filter(sala=sala, activa=True)
+        serializer = MesaSerializer(mesas, many=True)
+        return Response(serializer.data)
+
+
+class MesaViewSet(viewsets.ModelViewSet):
+    queryset = Mesa.objects.all()
+    serializer_class = MesaSerializer
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAdmin]
+
+    def destroy(self, request, *args, **kwargs):
+        mesa = self.get_object()
+        # Evitar eliminar mesas con reservas activas
+        reservas_activas = Reserva.objects.filter(mesa=mesa, estado__in=['pendiente', 'confirmada', 'en_curso']).exists()
+        if reservas_activas:
+            return Response({'error': 'No se puede eliminar una mesa con reservas activas'}, status=status.HTTP_400_BAD_REQUEST)
+        # Soft delete
+        mesa.activa = False
+        mesa.save()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ReservaViewSet(viewsets.ModelViewSet):
+    queryset = Reserva.objects.all()
+    serializer_class = ReservaSerializer
+    authentication_classes = [JWTAuthentication]
+
+    def get_permissions(self):
+        if self.action in ['create', 'mis_reservas', 'cancelar']:
+            return [IsAuthenticatedJWT()]
+        if self.action in ['confirmar_llegada', 'liberar', 'no_asistio', 'finalizar']:
+            return [IsEmpleadoOrAdmin()]
+        return [IsAdmin()]
+
+    @action(detail=False, methods=['get'])
+    def mis_reservas(self, request):
+        if request.user.cod_rol.cod_rol != 'cliente':
+            return Response({'error': 'Solo los clientes tienen "mis reservas"'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            cliente = Cliente.objects.get(id_usuario=request.user)
+            reservas = Reserva.objects.filter(cliente=cliente).order_by('-fecha', '-hora_inicio')
+            serializer = self.get_serializer(reservas, many=True)
+            return Response(serializer.data)
+        except Cliente.DoesNotExist:
+            return Response({'error': 'Perfil de cliente no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+
+    def create(self, request, *args, **kwargs):
+        data = request.data
+        if request.user.cod_rol.cod_rol != 'cliente':
+            return Response({'error': 'Solo los clientes pueden hacer reservas web'}, status=status.HTTP_403_FORBIDDEN)
+        
+        try:
+            cliente = Cliente.objects.get(id_usuario=request.user)
+        except Cliente.DoesNotExist:
+            return Response({'error': 'Perfil de cliente no encontrado'}, status=status.HTTP_400_BAD_REQUEST)
+
+        sala_id = data.get('sala')
+        mesa_id = data.get('mesa')
+        fecha = data.get('fecha')
+        hora_inicio = data.get('hora_inicio')
+        hora_fin = data.get('hora_fin')
+        cantidad_personas = data.get('cantidad_personas')
+
+        try:
+            sala = SalaTematica.objects.get(id=sala_id)
+            mesa = Mesa.objects.get(id=mesa_id, sala=sala)
+        except (SalaTematica.DoesNotExist, Mesa.DoesNotExist):
+            return Response({'error': 'Sala o Mesa no válidas'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not sala.habilitada:
+            return Response({'error': 'La sala está deshabilitada'}, status=status.HTTP_400_BAD_REQUEST)
+        if not mesa.activa:
+            return Response({'error': 'La mesa no está activa'}, status=status.HTTP_400_BAD_REQUEST)
+        if int(cantidad_personas) > mesa.capacidad:
+            return Response({'error': 'La cantidad de personas excede la capacidad de la mesa'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Validar cruce de reservas
+        cruce = Reserva.objects.filter(
+            mesa=mesa,
+            fecha=fecha,
+            hora_inicio=hora_inicio,
+            estado__in=['pendiente', 'confirmada', 'en_curso']
+        ).exists()
+
+        if cruce:
+            return Response({'error': 'La mesa ya está reservada en este horario'}, status=status.HTTP_400_BAD_REQUEST)
+
+        reserva = Reserva.objects.create(
+            cliente=cliente,
+            sala=sala,
+            mesa=mesa,
+            fecha=fecha,
+            hora_inicio=hora_inicio,
+            hora_fin=hora_fin,
+            cantidad_personas=cantidad_personas,
+            estado='pendiente'
+        )
+
+        serializer = self.get_serializer(reserva)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    # --- ACCIONES DE ESTADO ---
+    
+    @action(detail=True, methods=['patch'])
+    def cancelar(self, request, pk=None):
+        reserva = self.get_object()
+        if request.user.cod_rol.cod_rol == 'cliente':
+            # Validar que el cliente solo cancele sus reservas
+            if reserva.cliente.id_usuario.id_usuario != request.user.id_usuario:
+                return Response({'error': 'No puedes cancelar reservas de otros'}, status=status.HTTP_403_FORBIDDEN)
+        
+        if reserva.estado not in ['pendiente', 'confirmada']:
+            return Response({'error': f'No se puede cancelar una reserva en estado {reserva.estado}'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        reserva.estado = 'cancelada'
+        reserva.save()
+        return Response({'mensaje': 'Reserva cancelada exitosamente'})
+
+    @action(detail=True, methods=['patch'])
+    def confirmar_llegada(self, request, pk=None):
+        reserva = self.get_object()
+        reserva.estado = 'en_curso'
+        reserva.save()
+        return Response({'mensaje': 'Llegada confirmada'})
+
+    @action(detail=True, methods=['patch'])
+    def liberar(self, request, pk=None):
+        reserva = self.get_object()
+        reserva.estado = 'liberada'
+        reserva.save()
+        return Response({'mensaje': 'Mesa liberada'})
+
+    @action(detail=True, methods=['patch'])
+    def no_asistio(self, request, pk=None):
+        reserva = self.get_object()
+        reserva.estado = 'no_asistio'
+        reserva.save()
+        return Response({'mensaje': 'Marcado como no asistió'})
+
+    @action(detail=True, methods=['patch'])
+    def finalizar(self, request, pk=None):
+        reserva = self.get_object()
+        reserva.estado = 'finalizada'
+        reserva.save()
+        return Response({'mensaje': 'Reserva finalizada'})

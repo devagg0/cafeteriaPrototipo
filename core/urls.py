@@ -8,5 +8,6 @@ urlpatterns = [
     path('', saludos_api, name='api-raiz'),
     path('admin/', admin.site.urls),
     path('api/', include('usuarios.urls')),
+    path('api/', include('reservas.urls')),
 ]
 
