@@ -1,10 +1,11 @@
 from rest_framework import viewsets, status
+from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.decorators import api_view, action
 from rest_framework.response import Response
 from django.db.models import Q
 from datetime import datetime
-from .models import SalaTematica, Mesa, Reserva
-from .serializers import SalaTematicaSerializer, MesaSerializer, ReservaSerializer
+from .models import SalaTematica, Mesa, Reserva, SalaImagen
+from .serializers import SalaTematicaSerializer, MesaSerializer, ReservaSerializer, SalaImagenSerializer
 from usuarios.models import Usuario, Cliente
 from usuarios.views import decodificar_token
 
@@ -65,6 +66,26 @@ class SalaTematicaViewSet(viewsets.ModelViewSet):
         sala.save()
         return Response({'mensaje': 'Estado actualizado', 'habilitada': sala.habilitada})
 
+    @action(detail=True, methods=['post'], parser_classes=[MultiPartParser, FormParser])
+    def subir_galeria(self, request, pk=None):
+        sala = self.get_object()
+        imagenes = request.FILES.getlist('galeria')
+        for img in imagenes:
+            SalaImagen.objects.create(sala=sala, imagen=img)
+        return Response({'mensaje': 'Imágenes subidas correctamente'}, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'])
+    def eliminar_imagen(self, request, pk=None):
+        sala = self.get_object()
+        imagen_id = request.data.get('imagen_id')
+        try:
+            imagen = SalaImagen.objects.get(id=imagen_id, sala=sala)
+            imagen.imagen.delete(save=False) # Eliminar archivo del filesystem
+            imagen.delete()
+            return Response({'mensaje': 'Imagen eliminada'}, status=status.HTTP_200_OK)
+        except SalaImagen.DoesNotExist:
+            return Response({'error': 'Imagen no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+
     @action(detail=True, methods=['get'])
     def disponibilidad(self, request, pk=None):
         sala = self.get_object()
@@ -104,7 +125,8 @@ class SalaTematicaViewSet(viewsets.ModelViewSet):
                     'id': m.id,
                     'nombre': m.nombre,
                     'capacidad': m.capacidad,
-                    'disponible': m.id not in mesas_reservadas_ids
+                    'disponible': (m.id not in mesas_reservadas_ids) and (m.estado == 'disponible'),
+                    'estado': m.estado
                 })
             
             disponibilidad.append({
