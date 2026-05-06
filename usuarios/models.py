@@ -43,7 +43,12 @@ class Empleado(models.Model):
     cod_empleado = models.CharField(max_length=6, primary_key=True)
     cargo = models.CharField(max_length=30)
     turno = models.CharField(max_length=20)
-    id_usuario = models.OneToOneField(Usuario, on_delete=models.CASCADE, related_name='empleado')
+    id_usuario = models.OneToOneField(
+        Usuario,
+        on_delete=models.CASCADE,
+        related_name='empleado',
+        db_column='id_usuario'
+    )
 
     def __str__(self):
         return f'{self.cod_empleado} - {self.id_usuario.nombre}'
@@ -84,11 +89,11 @@ def crear_roles_por_defecto(sender, **kwargs):
     # Crear administrador por defecto si no existe
     import hashlib
     admin_rol = Rol.objects.get(cod_rol='admin')
-    correo_admin = 'administrador@gmail.com'
+    correo_admin = 'admin@cafeteria.com'
     if not Usuario.objects.filter(correo=correo_admin).exists():
-        contrasena_hash = hashlib.sha256('adm123'.encode()).hexdigest()
+        contrasena_hash = hashlib.sha256('admin123'.encode()).hexdigest()
         Usuario.objects.create(
-            nombre='Administrador Principal',
+            nombre='Admin Sistema',
             correo=correo_admin,
             contrasena=contrasena_hash,
             cod_rol=admin_rol

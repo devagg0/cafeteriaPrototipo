@@ -448,13 +448,13 @@ def lista_usuarios(request):
                 cod_rol=rol
             )
             
-             # 🔥 CREAR CLIENTE AUTOMÁTICO
+            # 🔥 CREAR CLIENTE AUTOMÁTICO
             if rol.cod_rol == 'cliente':
-             from .models import Cliente
-             
-             telefono = str(usuario_nuevo.id_usuario).zfill(8)
+                from .models import Cliente
+            
+            telefono = str(usuario_nuevo.id_usuario).zfill(8)
 
-             Cliente.objects.create(
+            Cliente.objects.create(
         cod_cliente=f"C{usuario_nuevo.id_usuario}",
         id_usuario=usuario_nuevo,
         telefono=telefono,
@@ -855,16 +855,16 @@ def registro_cliente(request):
 
             # 🔥 crear cliente (SIN romper registro si falla)
             try:
-                 telefono = str(usuario.id_usuario).zfill(8)
+                telefono = str(usuario.id_usuario).zfill(8)
 
-                 Cliente.objects.create(
-                   cod_cliente=f"C{usuario.id_usuario}",
-                   id_usuario=usuario,
-                      telefono=telefono,
-                      direccion='Sin dirección'
-                       )
+                Cliente.objects.create(
+                cod_cliente=f"C{usuario.id_usuario}",
+                id_usuario=usuario,
+                telefono=telefono,
+                direccion='Sin dirección'
+                )
             except Exception as e:
-                 print("Error creando cliente:", e)
+                print("Error creando cliente:", e)
 
             return JsonResponse({
                 'mensaje': 'Usuario registrado correctamente',
