@@ -13,7 +13,10 @@ SECRET_KEY = 'django-insecure--trf-zj-a9q@i$h#+wbj5&(z6dcz+u0t&0y6qa5!de+vy!a%my
 
 DEBUG = False
 
-ALLOWED_HOSTS = ["*"]
+ALLOWED_HOSTS = [ 
+    "cafeteriaprototipo-production.up.railway.app",
+    "cafeteriafrontapp.vercel.app",
+    ]
 
 # ========================
 # APLICACIONES
