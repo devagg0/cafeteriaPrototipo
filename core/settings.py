@@ -11,9 +11,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = 'django-insecure--trf-zj-a9q@i$h#+wbj5&(z6dcz+u0t&0y6qa5!de+vy!a%my'
 
-DEBUG = True
+DEBUG = False
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ["*"]
 
 # ========================
 # APLICACIONES
@@ -128,4 +128,6 @@ STATIC_URL = 'static/'
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
-CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOWED_ORIGINS = [
+    "https://cafeteriafrontapp.vercel.app",
+]
