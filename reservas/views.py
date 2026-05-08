@@ -8,7 +8,7 @@ from .models import SalaTematica, Mesa, Reserva, SalaImagen
 from .serializers import SalaTematicaSerializer, MesaSerializer, ReservaSerializer, SalaImagenSerializer
 from usuarios.models import Usuario, Cliente
 from usuarios.views import decodificar_token
-
+from usuarios.models import Bitacora
 # --- AUTENTICACIÓN CUSTOM ---
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed
@@ -97,6 +97,16 @@ class SalaTematicaViewSet(viewsets.ModelViewSet):
             fecha = datetime.strptime(fecha_str, '%Y-%m-%d').date()
         except ValueError:
             return Response({'error': 'Formato de fecha inválido. Use YYYY-MM-DD'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # 🔥 NUEVA FUNCIÓN (AQUÍ)
+        @action(detail=True, methods=['get'])
+        def mesas(self, request, pk=None):
+            sala = self.get_object()
+            mesas = sala.mesas.filter(activa=True)
+            serializer = MesaSerializer(mesas, many=True)
+            return Response(serializer.data)
+
+
 
         # Horarios fijos
         horarios = [
@@ -205,6 +215,22 @@ class ReservaViewSet(viewsets.ModelViewSet):
         hora_fin = data.get('hora_fin')
         cantidad_personas = data.get('cantidad_personas')
 
+        # 🔐 VALIDACIÓN FECHA
+        from django.utils import timezone
+        from datetime import datetime
+
+        try:
+            fecha_obj = datetime.strptime(fecha, "%Y-%m-%d").date()
+        except:
+            return Response({'error': 'Formato de fecha inválido'}, status=400)
+
+        if fecha_obj < timezone.now().date():
+            return Response({'error': 'No puedes reservar en fechas pasadas'}, status=400)
+
+        # 🔐 VALIDACIÓN HORARIO
+        if hora_inicio >= hora_fin:
+            return Response({'error': 'Horario inválido'}, status=400)
+
         try:
             sala = SalaTematica.objects.get(id=sala_id)
             mesa = Mesa.objects.get(id=mesa_id, sala=sala)
@@ -222,8 +248,10 @@ class ReservaViewSet(viewsets.ModelViewSet):
         cruce = Reserva.objects.filter(
             mesa=mesa,
             fecha=fecha,
-            hora_inicio=hora_inicio,
             estado__in=['pendiente', 'confirmada', 'en_curso']
+        ).filter(
+            hora_inicio__lt=hora_fin,
+            hora_fin__gt=hora_inicio
         ).exists()
 
         if cruce:
@@ -240,6 +268,14 @@ class ReservaViewSet(viewsets.ModelViewSet):
             estado='pendiente'
         )
 
+        # 🔥 BITÁCORA
+        Bitacora.objects.create(
+            usuario=request.user,
+            accion='crear reserva',
+            detalles=f'Reserva ID {reserva.id} - Sala {sala.nombre} - Mesa {mesa.nombre}'
+        )
+
+
         serializer = self.get_serializer(reserva)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
@@ -248,6 +284,13 @@ class ReservaViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['patch'])
     def cancelar(self, request, pk=None):
         reserva = self.get_object()
+        
+        from django.utils import timezone
+
+        # 🔐 VALIDAR FECHA
+        if reserva.fecha < timezone.now().date():
+            return Response({'error': 'No puedes cancelar reservas pasadas'}, status=400)
+        
         if request.user.cod_rol.cod_rol == 'cliente':
             # Validar que el cliente solo cancele sus reservas
             if reserva.cliente.id_usuario.id_usuario != request.user.id_usuario:
@@ -256,8 +299,22 @@ class ReservaViewSet(viewsets.ModelViewSet):
         if reserva.estado not in ['pendiente', 'confirmada']:
             return Response({'error': f'No se puede cancelar una reserva en estado {reserva.estado}'}, status=status.HTTP_400_BAD_REQUEST)
         
+        
+        # 🔥 CANCELAR
         reserva.estado = 'cancelada'
         reserva.save()
+        
+        # 🔥 LIBERAR MESA
+        reserva.mesa.estado = 'disponible'
+        reserva.mesa.save()
+        
+        # 🔥 BITÁCORA
+        Bitacora.objects.create(
+            usuario=request.user,
+            accion='cancelar reserva',
+            detalles=f'Reserva ID {reserva.id} cancelada'
+        )
+        
         return Response({'mensaje': 'Reserva cancelada exitosamente'})
 
     @action(detail=True, methods=['patch'])
