@@ -135,7 +135,7 @@ class SalaTematicaViewSet(viewsets.ModelViewSet):
                     'id': m.id,
                     'nombre': m.nombre,
                     'capacidad': m.capacidad,
-                    'disponible': (m.id not in mesas_reservadas_ids) and (m.estado == 'disponible'),
+                    'disponible': (m.id not in mesas_reservadas_ids),
                     'estado': m.estado
                 })
             
@@ -179,10 +179,24 @@ class ReservaViewSet(viewsets.ModelViewSet):
     authentication_classes = [JWTAuthentication]
 
     def get_permissions(self):
+
+    # CLIENTE
         if self.action in ['create', 'mis_reservas', 'cancelar']:
             return [IsAuthenticatedJWT()]
-        if self.action in ['confirmar_llegada', 'liberar', 'no_asistio', 'finalizar']:
-            return [IsEmpleadoOrAdmin()]
+
+    # EMPLEADO + ADMIN
+        if self.action in [
+        'list',
+        'retrieve',
+        'confirmar',
+        'confirmar_llegada',
+        'liberar',
+        'no_asistio',
+        'finalizar'
+    ]:
+         return [IsEmpleadoOrAdmin()]
+
+    # SOLO ADMIN
         return [IsAdmin()]
 
     @action(detail=False, methods=['get'])
@@ -301,8 +315,10 @@ class ReservaViewSet(viewsets.ModelViewSet):
         
         
         # 🔥 CANCELAR
-        reserva.estado = 'cancelada'
+        reserva.estado = 'finalizada'
         reserva.save()
+
+        actualizar_estado_mesa(reserva.mesa)
         
         # 🔥 LIBERAR MESA
         reserva.mesa.estado = 'disponible'
@@ -316,27 +332,101 @@ class ReservaViewSet(viewsets.ModelViewSet):
         )
         
         return Response({'mensaje': 'Reserva cancelada exitosamente'})
+    @action(detail=True, methods=['patch'])
+    def confirmar(self, request, pk=None):
+
+     reserva = self.get_object()
+
+    # VALIDAR ESTADO
+     if reserva.estado != 'pendiente':
+        return Response({
+            'error': f'No se puede confirmar una reserva en estado {reserva.estado}'
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    # VALIDAR MESA
+    
+
+    # CAMBIAR ESTADOS
+     reserva.estado = 'confirmada'
+     reserva.save()
+
+     reserva.mesa.estado = 'reservada'
+     reserva.mesa.save()
+
+    # BITÁCORA
+     Bitacora.objects.create(
+        usuario=request.user,
+        accion='confirmar reserva',
+        detalles=f'Reserva ID {reserva.id} confirmada'
+    )
+
+     return Response({
+        'mensaje': 'Reserva confirmada correctamente'
+    })
 
     @action(detail=True, methods=['patch'])
     def confirmar_llegada(self, request, pk=None):
-        reserva = self.get_object()
-        reserva.estado = 'en_curso'
-        reserva.save()
-        return Response({'mensaje': 'Llegada confirmada'})
+
+     reserva = self.get_object()
+
+    # VALIDAR ESTADO
+     if reserva.estado != 'confirmada':
+        return Response({
+            'error': f'Solo reservas confirmadas pueden iniciar. Estado actual: {reserva.estado}'
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    # VALIDAR MESA
+     if reserva.mesa.estado != 'reservada':
+        return Response({
+            'error': 'La mesa no está reservada'
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    # CAMBIAR ESTADO RESERVA
+     reserva.estado = 'en_curso'
+     reserva.save()
+
+    # CAMBIAR ESTADO MESA
+     reserva.mesa.estado = 'ocupada'
+     reserva.mesa.save()
+
+    # BITÁCORA
+     Bitacora.objects.create(
+        usuario=request.user,
+        accion='check-in reserva',
+        detalles=f'Reserva ID {reserva.id} iniciada'
+    )
+
+     return Response({
+        'mensaje': 'Check-in realizado correctamente'
+    })
 
     @action(detail=True, methods=['patch'])
     def liberar(self, request, pk=None):
+
         reserva = self.get_object()
+
         reserva.estado = 'liberada'
         reserva.save()
-        return Response({'mensaje': 'Mesa liberada'})
+
+        actualizar_estado_mesa(reserva.mesa)
+
+        return Response({
+          'mensaje': 'Mesa liberada'
+    })
 
     @action(detail=True, methods=['patch'])
     def no_asistio(self, request, pk=None):
+
         reserva = self.get_object()
+
         reserva.estado = 'no_asistio'
         reserva.save()
-        return Response({'mensaje': 'Marcado como no asistió'})
+
+        actualizar_estado_mesa(reserva.mesa)
+
+        return Response({
+            'mensaje': 'Reserva marcada como no asistió'
+    })
 
     @action(detail=True, methods=['patch'])
     def finalizar(self, request, pk=None):
@@ -344,3 +434,27 @@ class ReservaViewSet(viewsets.ModelViewSet):
         reserva.estado = 'finalizada'
         reserva.save()
         return Response({'mensaje': 'Reserva finalizada'})
+
+def actualizar_estado_mesa(mesa):
+
+    reservas_activas = Reserva.objects.filter(
+        mesa=mesa,
+        estado__in=['pendiente', 'confirmada', 'en_curso']
+    ).exists()
+
+    if reservas_activas:
+
+        reserva_en_curso = Reserva.objects.filter(
+            mesa=mesa,
+            estado='en_curso'
+        ).exists()
+
+        if reserva_en_curso:
+            mesa.estado = 'ocupada'
+        else:
+            mesa.estado = 'reservada'
+
+    else:
+        mesa.estado = 'disponible'
+
+    mesa.save()

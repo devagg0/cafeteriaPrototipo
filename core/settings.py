@@ -11,12 +11,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = 'django-insecure--trf-zj-a9q@i$h#+wbj5&(z6dcz+u0t&0y6qa5!de+vy!a%my'
 
-DEBUG = False
+DEBUG = True
 
-ALLOWED_HOSTS = [ 
-    "cafeteriaprototipo-production.up.railway.app",
-    "cafeteriafrontapp.vercel.app",
-    ]
+ALLOWED_HOSTS = []
 
 # ========================
 # APLICACIONES
@@ -131,6 +128,5 @@ STATIC_URL = 'static/'
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
-CORS_ALLOWED_ORIGINS = [
-    "https://cafeteriafrontapp.vercel.app",
-]
+CORS_ALLOW_ALL_ORIGINS = True
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
