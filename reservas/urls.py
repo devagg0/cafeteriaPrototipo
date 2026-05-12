@@ -9,4 +9,10 @@ router.register(r'reservas', ReservaViewSet, basename='reservas')
 
 urlpatterns = [
     path('', include(router.urls)),
+
+    #  CU13
+    path('asistencia/', include('reservas.asistencia.urls')),
+
+    #  CU14
+    path('notificaciones/', include('reservas.notificaciones.urls')),
 ]
