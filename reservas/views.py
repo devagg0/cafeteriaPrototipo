@@ -106,16 +106,6 @@ class SalaTematicaViewSet(viewsets.ModelViewSet):
         except ValueError:
             return Response({'error': 'Formato de fecha inválido. Use YYYY-MM-DD'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # 🔥 NUEVA FUNCIÓN (AQUÍ)
-        @action(detail=True, methods=['get'])
-        def mesas(self, request, pk=None):
-            sala = self.get_object()
-            mesas = sala.mesas.filter(activa=True)
-            serializer = MesaSerializer(mesas, many=True)
-            return Response(serializer.data)
-
-
-
         # Horarios fijos
         horarios = [
             ("10:00:00", "11:30:00"),
@@ -127,8 +117,6 @@ class SalaTematicaViewSet(viewsets.ModelViewSet):
             ("19:00:00", "20:30:00"),
             ("20:30:00", "22:00:00"),
         ]
-
-
 
         mesas_activas = Mesa.objects.filter(sala=sala, activa=True)
         reservas_dia = Reserva.objects.filter(sala=sala, fecha=fecha, estado__in=['pendiente', 'confirmada', 'en_curso'])
@@ -323,14 +311,10 @@ class ReservaViewSet(viewsets.ModelViewSet):
         
         
         # 🔥 CANCELAR
-        reserva.estado = 'finalizada'
+        reserva.estado = 'cancelada'
         reserva.save()
 
         actualizar_estado_mesa(reserva.mesa)
-        
-        # 🔥 LIBERAR MESA
-        reserva.mesa.estado = 'disponible'
-        reserva.mesa.save()
         
         # 🔥 BITÁCORA
         Bitacora.objects.create(

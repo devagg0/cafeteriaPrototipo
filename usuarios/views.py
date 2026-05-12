@@ -448,20 +448,16 @@ def lista_usuarios(request):
                 cod_rol=rol
             )
             
-            # 🔥 CREAR CLIENTE AUTOMÁTICO
+            # 🔥 CREAR CLIENTE AUTOMÁTICO (solo si el rol es cliente)
             if rol.cod_rol == 'cliente':
                 from .models import Cliente
-            
-            telefono = str(usuario_nuevo.id_usuario).zfill(8)
-
-            Cliente.objects.create(
-        cod_cliente=f"C{usuario_nuevo.id_usuario}",
-        id_usuario=usuario_nuevo,
-        telefono=telefono,
-        direccion='Sin dirección'
-    )
-             
-             
+                telefono = str(usuario_nuevo.id_usuario).zfill(8)
+                Cliente.objects.create(
+                    cod_cliente=f"C{usuario_nuevo.id_usuario}",
+                    id_usuario=usuario_nuevo,
+                    telefono=telefono,
+                    direccion='Sin dirección'
+                )
             return JsonResponse({
                 'mensaje': 'Usuario creado',
                 'id_usuario': usuario_nuevo.id_usuario
@@ -650,6 +646,8 @@ def detalle_empleado(request, employee_id):
     if error_response:
         return error_response
 
+    request.usuario_autenticado = usuario_autenticado
+
     if not validar_acceso_empleado(request, employee_id):
         return JsonResponse({'error': 'Acceso denegado'}, status=403)
 
@@ -674,9 +672,19 @@ def detalle_empleado(request, employee_id):
 
         try:
             data = json.loads(request.body)
+            # Actualizar datos del empleado
             empleado.cargo = data.get('cargo', empleado.cargo)
             empleado.turno = data.get('turno', empleado.turno)
             empleado.save()
+
+            # Actualizar datos del usuario asociado
+            usuario = empleado.id_usuario
+            if 'nombre' in data:
+                usuario.nombre = data['nombre']
+            if 'correo' in data:
+                usuario.correo = data['correo']
+            usuario.save()
+
             registrar_bitacora(usuario_autenticado, 'actualiza empleado', f'ID: {employee_id}')
             return JsonResponse({'mensaje': 'Empleado actualizado'})
         except json.JSONDecodeError:
@@ -687,8 +695,9 @@ def detalle_empleado(request, employee_id):
             return JsonResponse({'error': 'Acceso denegado: solo admin puede eliminar'}, status=403)
 
         registrar_bitacora(usuario_autenticado, 'elimina empleado', f'ID: {employee_id}')
-        empleado.delete()
-        return JsonResponse({'mensaje': 'Empleado eliminado'})
+        usuario_base = empleado.id_usuario
+        usuario_base.delete()  # Esto eliminará en cascada el Empleado
+        return JsonResponse({'mensaje': 'Empleado y usuario eliminados'})
 
     return JsonResponse({'error': 'Método no permitido'}, status=405)
 
@@ -779,6 +788,8 @@ def detalle_cliente(request, customer_id):
     if error_response:
         return error_response
 
+    request.usuario_autenticado = usuario_autenticado
+
     if not validar_acceso_cliente(request, customer_id):
         return JsonResponse({'error': 'Acceso denegado'}, status=403)
 
@@ -808,9 +819,19 @@ def detalle_cliente(request, customer_id):
 
         try:
             data = json.loads(request.body)
+            # Actualizar datos del cliente
             cliente.telefono = data.get('telefono', cliente.telefono)
             cliente.direccion = data.get('direccion', cliente.direccion)
             cliente.save()
+
+            # Actualizar datos del usuario asociado
+            usuario = cliente.id_usuario
+            if 'nombre' in data:
+                usuario.nombre = data['nombre']
+            if 'correo' in data:
+                usuario.correo = data['correo']
+            usuario.save()
+
             registrar_bitacora(usuario_autenticado, 'actualiza cliente', f'ID: {customer_id}')
             return JsonResponse({'mensaje': 'Cliente actualizado'})
         except json.JSONDecodeError:
@@ -821,8 +842,9 @@ def detalle_cliente(request, customer_id):
             return JsonResponse({'error': 'Acceso denegado: solo admin puede eliminar'}, status=403)
 
         registrar_bitacora(usuario_autenticado, 'elimina cliente', f'ID: {customer_id}')
-        cliente.delete()
-        return JsonResponse({'mensaje': 'Cliente eliminado'})
+        usuario_base = cliente.id_usuario
+        usuario_base.delete()  # Esto eliminará en cascada el Cliente
+        return JsonResponse({'mensaje': 'Cliente y usuario eliminados'})
 
     return JsonResponse({'error': 'Método no permitido'}, status=405)
 
@@ -900,7 +922,7 @@ def mi_perfil(request):
             data['direccion'] = cliente.direccion
         return JsonResponse(data)
 
-    elif request.method in ['PUT', 'PATCH']:
+    elif request.method in ['POST', 'PUT', 'PATCH']:
         content_type = request.content_type or ''
 
         if 'multipart/form-data' in content_type:

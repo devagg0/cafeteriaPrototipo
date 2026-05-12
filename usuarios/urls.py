@@ -17,10 +17,10 @@ urlpatterns = [
     path('roles/', views.lista_roles, name='api-role-list'),
 
     path('empleados/', views.lista_empleados, name='api-employee-list'),
-    path('empleados/<int:employee_id>/', views.detalle_empleado, name='api-employee-detail'),
+    path('empleados/<str:employee_id>/', views.detalle_empleado, name='api-employee-detail'),
 
     path('clientes/', views.lista_clientes, name='api-customer-list'),
-    path('clientes/<int:customer_id>/', views.detalle_cliente, name='api-customer-detail'),
+    path('clientes/<str:customer_id>/', views.detalle_cliente, name='api-customer-detail'),
     path('mi-perfil/', views.mi_perfil, name='api-mi-perfil'),
     path('recuperar-password/', views.recuperar_password),
 ]

@@ -9,11 +9,13 @@ load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = 'django-insecure--trf-zj-a9q@i$h#+wbj5&(z6dcz+u0t&0y6qa5!de+vy!a%my'
+SECRET_KEY = os.getenv('SECRET_KEY') or 'django-insecure--trf-zj-a9q@i$h#+wbj5&(z6dcz+u0t&0y6qa5!de+vy!a%my'
 
-DEBUG = True
+DEBUG = os.getenv('DEBUG', 'True') == 'True'
 
-ALLOWED_HOSTS = []
+# En producción (VM), agrega la IP o dominio al .env como ALLOWED_HOSTS=IP1,IP2
+_allowed = os.getenv('ALLOWED_HOSTS', '')
+ALLOWED_HOSTS = [h.strip() for h in _allowed.split(',') if h.strip()] or ['*']
 
 # ========================
 # APLICACIONES

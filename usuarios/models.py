@@ -92,7 +92,7 @@ def crear_roles_por_defecto(sender, **kwargs):
     admin_rol = Rol.objects.get(cod_rol='admin')
     correo_admin = 'admin@cafeteria.com'
     if not Usuario.objects.filter(correo=correo_admin).exists():
-        contrasena_hash = hashlib.sha256('admin123'.encode()).hexdigest()
+        contrasena_hash = hashlib.sha256('Admin123$'.encode()).hexdigest()
         Usuario.objects.create(
             nombre='Admin Sistema',
             correo=correo_admin,
