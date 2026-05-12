@@ -18,6 +18,7 @@ class Usuario(models.Model):
     correo = models.EmailField(max_length=60, unique=True)
     contrasena = models.CharField(max_length=100)
     cod_rol = models.ForeignKey(Rol, on_delete=models.CASCADE, related_name='usuarios')
+    foto_perfil = models.ImageField(upload_to='perfiles/', blank=True, null=True)
 
     codigo_recuperacion = models.CharField(max_length=6, null=True, blank=True)
 

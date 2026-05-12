@@ -874,4 +874,86 @@ def registro_cliente(request):
         except Exception as e:
             return JsonResponse({'error': str(e)}, status=400)
 
-    return JsonResponse({'error': 'Método no permitido'}, status=405)    
+    return JsonResponse({'error': 'Método no permitido'}, status=405)
+
+
+@csrf_exempt
+def mi_perfil(request):
+    """Endpoint para que el cliente autenticado vea y edite su propio perfil."""
+    usuario, error_response = obtener_usuario_desde_token(request)
+    if error_response:
+        return error_response
+
+    if request.method == 'GET':
+        data = {
+            'id_usuario': usuario.id_usuario,
+            'nombre': usuario.nombre,
+            'correo': usuario.correo,
+            'rol': usuario.cod_rol.cod_rol,
+            'foto_perfil': usuario.foto_perfil.url if usuario.foto_perfil else None,
+        }
+        # Agregar datos de cliente si existe
+        cliente = getattr(usuario, 'cliente', None)
+        if cliente:
+            data['cod_cliente'] = cliente.cod_cliente
+            data['telefono'] = cliente.telefono
+            data['direccion'] = cliente.direccion
+        return JsonResponse(data)
+
+    elif request.method in ['PUT', 'PATCH']:
+        content_type = request.content_type or ''
+
+        if 'multipart/form-data' in content_type:
+            nombre = request.POST.get('nombre')
+            telefono = request.POST.get('telefono')
+            direccion = request.POST.get('direccion')
+            foto = request.FILES.get('foto_perfil')
+        else:
+            try:
+                body = json.loads(request.body)
+            except json.JSONDecodeError:
+                return JsonResponse({'error': 'JSON inválido'}, status=400)
+            nombre = body.get('nombre')
+            telefono = body.get('telefono')
+            direccion = body.get('direccion')
+            foto = None
+
+        # Actualizar usuario
+        if nombre:
+            usuario.nombre = nombre
+        if foto:
+            # Borrar foto anterior si existe
+            if usuario.foto_perfil:
+                usuario.foto_perfil.delete(save=False)
+            usuario.foto_perfil = foto
+        usuario.save()
+
+        # Actualizar cliente si existe
+        cliente = getattr(usuario, 'cliente', None)
+        if cliente:
+            if telefono is not None:
+                cliente.telefono = telefono
+            if direccion is not None:
+                cliente.direccion = direccion
+            cliente.save()
+
+        # Actualizar localStorage del frontend
+        registrar_bitacora(usuario, 'actualiza perfil')
+
+        # Devolver datos actualizados
+        data = {
+            'mensaje': 'Perfil actualizado correctamente',
+            'id_usuario': usuario.id_usuario,
+            'nombre': usuario.nombre,
+            'correo': usuario.correo,
+            'rol': usuario.cod_rol.cod_rol,
+            'foto_perfil': usuario.foto_perfil.url if usuario.foto_perfil else None,
+        }
+        cliente = getattr(usuario, 'cliente', None)
+        if cliente:
+            data['cod_cliente'] = cliente.cod_cliente
+            data['telefono'] = cliente.telefono
+            data['direccion'] = cliente.direccion
+        return JsonResponse(data)
+
+    return JsonResponse({'error': 'Método no permitido'}, status=405)

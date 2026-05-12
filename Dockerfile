@@ -7,7 +7,7 @@ ENV PYTHONUNBUFFERED=1
 COPY requirements.txt .
 
 # Install existing requirements, plus django and common REST framework packages just in case they are missing
-RUN pip install --no-cache-dir -r requirements.txt django djangorestframework django-cors-headers python-dotenv PyJWT psycopg2-binary
+RUN pip install --no-cache-dir -r requirements.txt django djangorestframework django-cors-headers python-dotenv PyJWT psycopg2-binary Pillow
 
 COPY . .
 

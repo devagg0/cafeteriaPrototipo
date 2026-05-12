@@ -66,6 +66,14 @@ class SalaTematicaViewSet(viewsets.ModelViewSet):
         sala.save()
         return Response({'mensaje': 'Estado actualizado', 'habilitada': sala.habilitada})
 
+    def destroy(self, request, *args, **kwargs):
+        sala = self.get_object()
+        reservas_activas = Reserva.objects.filter(sala=sala, estado__in=['pendiente', 'confirmada', 'en_curso']).exists()
+        if reservas_activas:
+            return Response({'error': 'No se puede eliminar una sala con reservas activas'}, status=status.HTTP_400_BAD_REQUEST)
+        sala.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
     @action(detail=True, methods=['post'], parser_classes=[MultiPartParser, FormParser])
     def subir_galeria(self, request, pk=None):
         sala = self.get_object()

@@ -21,5 +21,6 @@ urlpatterns = [
 
     path('clientes/', views.lista_clientes, name='api-customer-list'),
     path('clientes/<int:customer_id>/', views.detalle_cliente, name='api-customer-detail'),
+    path('mi-perfil/', views.mi_perfil, name='api-mi-perfil'),
     path('recuperar-password/', views.recuperar_password),
 ]
