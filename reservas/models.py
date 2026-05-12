@@ -52,6 +52,8 @@ class Mesa(models.Model):
 
     def __str__(self):
         return f'{self.nombre} ({self.sala.nombre})'
+    
+    
 
 
 class Reserva(models.Model):
@@ -64,6 +66,8 @@ class Reserva(models.Model):
         ('liberada', 'Liberada'),
         ('no_asistio', 'No Asistió'),
     ]
+
+    
 
     cliente = models.ForeignKey(Cliente, on_delete=models.CASCADE, related_name='reservas')
     sala = models.ForeignKey(SalaTematica, on_delete=models.CASCADE, related_name='reservas')
@@ -80,3 +84,30 @@ class Reserva(models.Model):
 
     def __str__(self):
         return f'{self.cliente.id_usuario.nombre} - {self.mesa.nombre} ({self.fecha} {self.hora_inicio})'
+    
+class NotificacionReserva(models.Model):
+
+    TIPOS = [
+        ('confirmacion', 'Confirmación'),
+        ('recordatorio', 'Recordatorio'),
+        ('cancelacion', 'Cancelación'),
+        ('modificacion', 'Modificación'),
+    ]
+
+    reserva = models.ForeignKey(
+        Reserva,
+        on_delete=models.CASCADE,
+        related_name='notificaciones'
+    )
+
+    tipo = models.CharField(max_length=20, choices=TIPOS)
+
+    mensaje = models.TextField()
+
+    enviada_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'notificacion_reserva'
+
+    def __str__(self):
+        return f'{self.tipo} - Reserva {self.reserva.id}'    
