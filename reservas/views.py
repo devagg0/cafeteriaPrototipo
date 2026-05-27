@@ -4,8 +4,11 @@ from rest_framework.decorators import api_view, action
 from rest_framework.response import Response
 from django.db.models import Q
 from datetime import datetime
-from .models import SalaTematica, Mesa, Reserva, SalaImagen
-from .serializers import SalaTematicaSerializer, MesaSerializer, ReservaSerializer, SalaImagenSerializer
+from .models import SalaTematica, Mesa, Reserva, SalaImagen, Categoria, Producto, Pedido, DetallePedido
+from .serializers import (
+    SalaTematicaSerializer, MesaSerializer, ReservaSerializer, SalaImagenSerializer,
+    CategoriaSerializer, ProductoSerializer, PedidoSerializer, DetallePedidoSerializer
+)
 from usuarios.models import Usuario, Cliente
 from usuarios.views import decodificar_token
 from usuarios.models import Bitacora
@@ -278,6 +281,55 @@ class ReservaViewSet(viewsets.ModelViewSet):
             estado='pendiente'
         )
 
+        # 🔥 MANEJO DEL PEDIDO / CARRITO
+        productos_req = data.get('productos')
+        if productos_req and isinstance(productos_req, list) and len(productos_req) > 0:
+            pedido = Pedido.objects.create(
+                reserva=reserva,
+                usuario=request.user,
+                total=0,
+                estado='confirmado'
+            )
+            total = 0
+            for prod in productos_req:
+                try:
+                    producto = Producto.objects.get(id=prod.get('id'))
+                except Producto.DoesNotExist:
+                    reserva.delete()
+                    return Response({'error': f'Producto con id {prod.get("id")} no encontrado'}, status=status.HTTP_400_BAD_REQUEST)
+                
+                cantidad = int(prod.get('cantidad', 0))
+                if cantidad <= 0:
+                    reserva.delete()
+                    return Response({'error': 'La cantidad debe ser mayor a 0'}, status=status.HTTP_400_BAD_REQUEST)
+                
+                if cantidad > producto.stock:
+                    reserva.delete()
+                    return Response({'error': f'Stock insuficiente para el producto {producto.nombre}'}, status=status.HTTP_400_BAD_REQUEST)
+                
+                if not producto.estado:
+                    reserva.delete()
+                    return Response({'error': f'El producto {producto.nombre} no está disponible'}, status=status.HTTP_400_BAD_REQUEST)
+                
+                # Descontar stock
+                producto.stock -= cantidad
+                producto.save()
+                
+                subtotal = producto.precio * cantidad
+                total += subtotal
+                
+                DetallePedido.objects.create(
+                    pedido=pedido,
+                    producto=producto,
+                    cantidad=cantidad,
+                    precio_unitario=producto.precio,
+                    subtotal=subtotal
+                )
+            
+            pedido.total = total
+            pedido.save()
+
+
         # 🔥 BITÁCORA
         Bitacora.objects.create(
             usuario=request.user,
@@ -450,3 +502,50 @@ def actualizar_estado_mesa(mesa):
         mesa.estado = 'disponible'
 
     mesa.save()
+
+
+class CategoriaViewSet(viewsets.ModelViewSet):
+    queryset = Categoria.objects.all()
+    serializer_class = CategoriaSerializer
+    authentication_classes = [JWTAuthentication]
+
+    def get_permissions(self):
+        if self.action in ['list', 'retrieve']:
+            return [IsAuthenticatedJWT()]
+        return [IsAdmin()]
+
+    def destroy(self, request, *args, **kwargs):
+        categoria = self.get_object()
+        if categoria.productos.filter(estado=True).exists():
+            return Response({'error': 'No se puede eliminar una categoría con productos activos'}, status=status.HTTP_400_BAD_REQUEST)
+        return super().destroy(request, *args, **kwargs)
+
+class ProductoViewSet(viewsets.ModelViewSet):
+    queryset = Producto.objects.all()
+    serializer_class = ProductoSerializer
+    authentication_classes = [JWTAuthentication]
+
+    def get_permissions(self):
+        if self.action in ['list', 'retrieve', 'disponibles']:
+            return [IsAuthenticatedJWT()]
+        return [IsAdmin()]
+
+    @action(detail=False, methods=['get'])
+    def disponibles(self, request):
+        productos = Producto.objects.filter(estado=True, stock__gt=0, categoria__estado=True)
+        serializer = self.get_serializer(productos, many=True)
+        return Response(serializer.data)
+
+class PedidoViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = Pedido.objects.all()
+    serializer_class = PedidoSerializer
+    authentication_classes = [JWTAuthentication]
+
+    def get_permissions(self):
+        return [IsAuthenticatedJWT()]
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.cod_rol.cod_rol == 'admin':
+            return Pedido.objects.all()
+        return Pedido.objects.filter(usuario=user)

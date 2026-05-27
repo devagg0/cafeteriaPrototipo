@@ -111,3 +111,70 @@ class NotificacionReserva(models.Model):
 
     def __str__(self):
         return f'{self.tipo} - Reserva {self.reserva.id}'    
+
+class Categoria(models.Model):
+    nombre = models.CharField(max_length=100, unique=True)
+    descripcion = models.TextField(blank=True, null=True)
+    estado = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'categoria'
+
+    def __str__(self):
+        return self.nombre
+
+
+class Producto(models.Model):
+    categoria = models.ForeignKey(Categoria, on_delete=models.CASCADE, related_name='productos')
+    nombre = models.CharField(max_length=150)
+    descripcion = models.TextField(blank=True, null=True)
+    precio = models.DecimalField(max_digits=10, decimal_places=2)
+    stock = models.IntegerField(default=0)
+    imagen = models.ImageField(upload_to='productos/', blank=True, null=True)
+    estado = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'producto'
+
+    def __str__(self):
+        return self.nombre
+
+
+class Pedido(models.Model):
+    ESTADOS_PEDIDO = [
+        ('pendiente', 'Pendiente'),
+        ('confirmado', 'Confirmado'),
+        ('cancelado', 'Cancelado'),
+    ]
+    reserva = models.OneToOneField(Reserva, on_delete=models.CASCADE, related_name='pedido')
+    usuario = models.ForeignKey('usuarios.Usuario', on_delete=models.CASCADE, related_name='pedidos')
+    total = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    estado = models.CharField(max_length=20, choices=ESTADOS_PEDIDO, default='pendiente')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'pedido'
+
+    def __str__(self):
+        return f'Pedido {self.id} - Reserva {self.reserva.id}'
+
+
+class DetallePedido(models.Model):
+    pedido = models.ForeignKey(Pedido, on_delete=models.CASCADE, related_name='detalles')
+    producto = models.ForeignKey(Producto, on_delete=models.CASCADE)
+    cantidad = models.IntegerField()
+    precio_unitario = models.DecimalField(max_digits=10, decimal_places=2)
+    subtotal = models.DecimalField(max_digits=10, decimal_places=2)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'detalle_pedido'
+
+    def __str__(self):
+        return f'Detalle {self.id} - Producto {self.producto.nombre}'

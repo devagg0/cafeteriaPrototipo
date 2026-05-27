@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.db.models import Sum
-from .models import SalaTematica, Mesa, Reserva, SalaImagen
+from .models import SalaTematica, Mesa, Reserva, SalaImagen, Categoria, Producto, Pedido, DetallePedido
 from usuarios.models import Cliente
 
 class SalaImagenSerializer(serializers.ModelSerializer):
@@ -52,4 +52,45 @@ class ReservaSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Reserva
+        fields = '__all__'
+
+
+class CategoriaSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Categoria
+        fields = '__all__'
+
+
+class ProductoSerializer(serializers.ModelSerializer):
+    categoria_nombre = serializers.ReadOnlyField(source='categoria.nombre')
+
+    class Meta:
+        model = Producto
+        fields = '__all__'
+
+
+class DetallePedidoSerializer(serializers.ModelSerializer):
+    producto_nombre = serializers.ReadOnlyField(source='producto.nombre')
+    producto_imagen = serializers.SerializerMethodField()
+
+    class Meta:
+        model = DetallePedido
+        fields = '__all__'
+        read_only_fields = ['pedido', 'precio_unitario', 'subtotal']
+
+    def get_producto_imagen(self, obj):
+        if obj.producto.imagen:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.producto.imagen.url)
+            return obj.producto.imagen.url
+        return None
+
+
+class PedidoSerializer(serializers.ModelSerializer):
+    detalles = DetallePedidoSerializer(many=True, read_only=True)
+    reserva_id = serializers.PrimaryKeyRelatedField(source='reserva', read_only=True)
+
+    class Meta:
+        model = Pedido
         fields = '__all__'
