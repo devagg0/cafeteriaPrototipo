@@ -30,6 +30,7 @@ INSTALLED_APPS = [
 
     'usuarios',
     'reservas',
+    'pedidos',  
     'corsheaders',
 ]
 

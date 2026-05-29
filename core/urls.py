@@ -11,6 +11,7 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/', include('usuarios.urls')),
     path('api/', include('reservas.urls')),
+    path('api/', include('pedidos.urls')),
 ]
 
 if settings.DEBUG:

@@ -1,17 +1,17 @@
 from rest_framework import viewsets, status
-from rest_framework.parsers import MultiPartParser, FormParser
-from rest_framework.decorators import api_view, action
+from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.parsers import MultiPartParser, FormParser
+from .models import SalaTematica, Mesa, Reserva, SalaImagen
+from .serializers import SalaTematicaSerializer, MesaSerializer, ReservaSerializer, SalaImagenSerializer
+from usuarios.models import Usuario, Cliente, Bitacora
+from usuarios.views import decodificar_token
+from pedidos.services import cancelar_preorden_por_reserva, convertir_preorden_a_pedido_por_checkin
 from django.db.models import Q
 from datetime import datetime
-from .models import SalaTematica, Mesa, Reserva, SalaImagen, Categoria, Producto, Pedido, DetallePedido
-from .serializers import (
-    SalaTematicaSerializer, MesaSerializer, ReservaSerializer, SalaImagenSerializer,
-    CategoriaSerializer, ProductoSerializer, PedidoSerializer, DetallePedidoSerializer
-)
-from usuarios.models import Usuario, Cliente
-from usuarios.views import decodificar_token
-from usuarios.models import Bitacora
+from pedidos.models import Producto, Preorden, DetallePreorden
+
+
 # --- AUTENTICACIÓN CUSTOM ---
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed
@@ -43,6 +43,10 @@ class IsEmpleadoOrAdmin(BasePermission):
 class IsAuthenticatedJWT(BasePermission):
     def has_permission(self, request, view):
         return bool(request.user)
+
+class IsClienteOrAdmin(BasePermission):
+    def has_permission(self, request, view):
+        return bool(request.user and request.user.cod_rol.cod_rol in ['admin', 'cliente'])
 
 # --- VIEWSETS ---
 
@@ -193,7 +197,7 @@ class ReservaViewSet(viewsets.ModelViewSet):
         'no_asistio',
         'finalizar'
     ]:
-         return [IsEmpleadoOrAdmin()]
+            return [IsEmpleadoOrAdmin()]
 
     # SOLO ADMIN
         return [IsAdmin()]
@@ -237,7 +241,7 @@ class ReservaViewSet(viewsets.ModelViewSet):
         except:
             return Response({'error': 'Formato de fecha inválido'}, status=400)
 
-        if fecha_obj < timezone.now().date():
+        if fecha_obj < timezone.localdate():
             return Response({'error': 'No puedes reservar en fechas pasadas'}, status=400)
 
         # 🔐 VALIDACIÓN HORARIO
@@ -281,53 +285,55 @@ class ReservaViewSet(viewsets.ModelViewSet):
             estado='pendiente'
         )
 
-        # 🔥 MANEJO DEL PEDIDO / CARRITO
+        # 🔥 PREORDEN (intención de pedido — NO toca stock)
+        # El stock se valida y descuenta recién cuando el mesero
+        # marca la preorden como "con_pedido" el día de la reserva.
         productos_req = data.get('productos')
         if productos_req and isinstance(productos_req, list) and len(productos_req) > 0:
-            pedido = Pedido.objects.create(
-                reserva=reserva,
-                usuario=request.user,
-                total=0,
-                estado='confirmado'
-            )
-            total = 0
+            from django.utils import timezone as tz
+            estado_preorden = 'apartada' if fecha_obj == tz.localdate() else 'programada'
+            total_preorden = 0
+            detalles_pre = []
+
             for prod in productos_req:
                 try:
                     producto = Producto.objects.get(id=prod.get('id'))
                 except Producto.DoesNotExist:
                     reserva.delete()
-                    return Response({'error': f'Producto con id {prod.get("id")} no encontrado'}, status=status.HTTP_400_BAD_REQUEST)
-                
+                    return Response(
+                        {'error': f'Producto con id {prod.get("id")} no encontrado'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
                 cantidad = int(prod.get('cantidad', 0))
                 if cantidad <= 0:
                     reserva.delete()
                     return Response({'error': 'La cantidad debe ser mayor a 0'}, status=status.HTTP_400_BAD_REQUEST)
-                
-                if cantidad > producto.stock:
-                    reserva.delete()
-                    return Response({'error': f'Stock insuficiente para el producto {producto.nombre}'}, status=status.HTTP_400_BAD_REQUEST)
-                
-                if not producto.estado:
-                    reserva.delete()
-                    return Response({'error': f'El producto {producto.nombre} no está disponible'}, status=status.HTTP_400_BAD_REQUEST)
-                
-                # Descontar stock
-                producto.stock -= cantidad
-                producto.save()
-                
+
                 subtotal = producto.precio * cantidad
-                total += subtotal
-                
-                DetallePedido.objects.create(
-                    pedido=pedido,
-                    producto=producto,
-                    cantidad=cantidad,
-                    precio_unitario=producto.precio,
-                    subtotal=subtotal
+                total_preorden += subtotal
+                detalles_pre.append({
+                    'producto': producto,
+                    'cantidad': cantidad,
+                    'precio_unitario': producto.precio,
+                    'subtotal': subtotal,
+                })
+
+            preorden = Preorden.objects.create(
+                reserva=reserva,
+                cliente=cliente,
+                sala=sala,
+                mesa=mesa,
+                total=total_preorden,
+                estado=estado_preorden,
+            )
+            for d in detalles_pre:
+                DetallePreorden.objects.create(
+                    preorden=preorden,
+                    producto=d['producto'],
+                    cantidad=d['cantidad'],
+                    precio_unitario=d['precio_unitario'],
+                    subtotal=d['subtotal'],
                 )
-            
-            pedido.total = total
-            pedido.save()
 
 
         # 🔥 BITÁCORA
@@ -343,135 +349,161 @@ class ReservaViewSet(viewsets.ModelViewSet):
 
     # --- ACCIONES DE ESTADO ---
     
+    # ──────────────────────────────────────────────────────────────────────
+    # CANCELAR RESERVA
+    # La cancelación de la reserva NUNCA debe bloquearse por la preorden.
+    # Primero se cancela la reserva; luego se intenta cancelar la preorden.
+    # ──────────────────────────────────────────────────────────────────────
     @action(detail=True, methods=['patch'])
     def cancelar(self, request, pk=None):
-        reserva = self.get_object()
-        
         from django.utils import timezone
+        from django.db import transaction
 
-        # 🔐 VALIDAR FECHA
-        if reserva.fecha < timezone.now().date():
+        reserva = self.get_object()
+
+        if reserva.fecha < timezone.localdate():
             return Response({'error': 'No puedes cancelar reservas pasadas'}, status=400)
-        
+
         if request.user.cod_rol.cod_rol == 'cliente':
-            # Validar que el cliente solo cancele sus reservas
             if reserva.cliente.id_usuario.id_usuario != request.user.id_usuario:
                 return Response({'error': 'No puedes cancelar reservas de otros'}, status=status.HTTP_403_FORBIDDEN)
-        
-        if reserva.estado not in ['pendiente', 'confirmada']:
-            return Response({'error': f'No se puede cancelar una reserva en estado {reserva.estado}'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        
-        # 🔥 CANCELAR
-        reserva.estado = 'cancelada'
-        reserva.save()
 
-        actualizar_estado_mesa(reserva.mesa)
-        
-        # 🔥 BITÁCORA
-        Bitacora.objects.create(
-            usuario=request.user,
-            accion='cancelar reserva',
-            detalles=f'Reserva ID {reserva.id} cancelada'
-        )
-        
-        return Response({'mensaje': 'Reserva cancelada exitosamente'})
+        if reserva.estado not in ['pendiente', 'confirmada']:
+            return Response(
+                {'error': f'No se puede cancelar una reserva en estado {reserva.estado}'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # 1. Cancelar la reserva (obligatorio — nunca debe fallar por la preorden)
+        with transaction.atomic():
+            reserva.estado = 'cancelada'
+            reserva.save()
+            actualizar_estado_mesa(reserva.mesa)
+            Bitacora.objects.create(
+                usuario=request.user,
+                accion='cancelar reserva',
+                detalles=f'Reserva ID {reserva.id} cancelada',
+            )
+
+        # 2. Cascade: cancelar preorden asociada (aislado — no bloquea si falla)
+        info_preorden = {}
+        try:
+            info_preorden = cancelar_preorden_por_reserva(reserva, request.user)
+        except Exception as exc:
+            info_preorden = {'preorden_aviso': f'Reserva cancelada. No se pudo actualizar la preorden: {exc}'}
+
+        respuesta = {'mensaje': 'Reserva cancelada exitosamente'}
+        respuesta.update(info_preorden)
+        return Response(respuesta)
+
+    # ──────────────────────────────────────────────────────────────────────
+    # CONFIRMAR RESERVA (pendiente → confirmada)
+    # NO toca preórdenes. Solo confirma la reserva.
+    # ──────────────────────────────────────────────────────────────────────
     @action(detail=True, methods=['patch'])
     def confirmar(self, request, pk=None):
+        reserva = self.get_object()
 
-     reserva = self.get_object()
+        if reserva.estado != 'pendiente':
+            return Response(
+                {'error': f'No se puede confirmar una reserva en estado {reserva.estado}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-    # VALIDAR ESTADO
-     if reserva.estado != 'pendiente':
-        return Response({
-            'error': f'No se puede confirmar una reserva en estado {reserva.estado}'
-        }, status=status.HTTP_400_BAD_REQUEST)
+        reserva.estado = 'confirmada'
+        reserva.save()
+        reserva.mesa.estado = 'reservada'
+        reserva.mesa.save()
 
-    # VALIDAR MESA
-    
+        Bitacora.objects.create(
+            usuario=request.user,
+            accion='confirmar reserva',
+            detalles=f'Reserva ID {reserva.id} confirmada',
+        )
+        return Response({'mensaje': 'Reserva confirmada correctamente'})
 
-    # CAMBIAR ESTADOS
-     reserva.estado = 'confirmada'
-     reserva.save()
-
-     reserva.mesa.estado = 'reservada'
-     reserva.mesa.save()
-
-    # BITÁCORA
-     Bitacora.objects.create(
-        usuario=request.user,
-        accion='confirmar reserva',
-        detalles=f'Reserva ID {reserva.id} confirmada'
-    )
-
-     return Response({
-        'mensaje': 'Reserva confirmada correctamente'
-    })
-
+    # ──────────────────────────────────────────────────────────────────────
+    # CHECK-IN (confirmada → en_curso) — aquí se convierte la preorden en pedido
+    # ──────────────────────────────────────────────────────────────────────
     @action(detail=True, methods=['patch'])
     def confirmar_llegada(self, request, pk=None):
+        from django.db import transaction
 
-     reserva = self.get_object()
+        reserva = self.get_object()
 
-    # VALIDAR ESTADO
-     if reserva.estado != 'confirmada':
-        return Response({
-            'error': f'Solo reservas confirmadas pueden iniciar. Estado actual: {reserva.estado}'
-        }, status=status.HTTP_400_BAD_REQUEST)
+        if reserva.estado != 'confirmada':
+            return Response(
+                {'error': f'Solo reservas confirmadas pueden iniciar. Estado actual: {reserva.estado}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if reserva.mesa.estado != 'reservada':
+            return Response({'error': 'La mesa no está reservada'}, status=status.HTTP_400_BAD_REQUEST)
 
-    # VALIDAR MESA
-     if reserva.mesa.estado != 'reservada':
-        return Response({
-            'error': 'La mesa no está reservada'
-        }, status=status.HTTP_400_BAD_REQUEST)
+        with transaction.atomic():
+            reserva.estado = 'en_curso'
+            reserva.save()
+            reserva.mesa.estado = 'ocupada'
+            reserva.mesa.save()
+            Bitacora.objects.create(
+                usuario=request.user,
+                accion='check-in reserva',
+                detalles=f'Reserva ID {reserva.id} iniciada (check-in)',
+            )
 
-    # CAMBIAR ESTADO RESERVA
-     reserva.estado = 'en_curso'
-     reserva.save()
+        # Cascade: convertir preorden en pedido real (solo aquí, en check-in)
+        info_preorden = {}
+        try:
+            info_preorden = convertir_preorden_a_pedido_por_checkin(reserva, request.user)
+        except Exception as exc:
+            info_preorden = {'preorden_aviso': f'Check-in realizado. No se pudo procesar la preorden: {exc}'}
 
-    # CAMBIAR ESTADO MESA
-     reserva.mesa.estado = 'ocupada'
-     reserva.mesa.save()
+        respuesta = {'mensaje': 'Check-in realizado correctamente'}
+        respuesta.update(info_preorden)
+        return Response(respuesta)
 
-    # BITÁCORA
-     Bitacora.objects.create(
-        usuario=request.user,
-        accion='check-in reserva',
-        detalles=f'Reserva ID {reserva.id} iniciada'
-    )
-
-     return Response({
-        'mensaje': 'Check-in realizado correctamente'
-    })
-
+    # ──────────────────────────────────────────────────────────────────────
+    # LIBERAR MESA
+    # ──────────────────────────────────────────────────────────────────────
     @action(detail=True, methods=['patch'])
     def liberar(self, request, pk=None):
-
         reserva = self.get_object()
-
         reserva.estado = 'liberada'
         reserva.save()
-
         actualizar_estado_mesa(reserva.mesa)
 
-        return Response({
-          'mensaje': 'Mesa liberada'
-    })
+        info_preorden = {}
+        try:
+            info_preorden = cancelar_preorden_por_reserva(reserva, request.user)
+        except Exception:
+            pass
 
+        respuesta = {'mensaje': 'Mesa liberada'}
+        respuesta.update(info_preorden)
+        return Response(respuesta)
+
+    # ──────────────────────────────────────────────────────────────────────
+    # NO ASISTIÓ
+    # ──────────────────────────────────────────────────────────────────────
     @action(detail=True, methods=['patch'])
     def no_asistio(self, request, pk=None):
-
         reserva = self.get_object()
-
         reserva.estado = 'no_asistio'
         reserva.save()
-
         actualizar_estado_mesa(reserva.mesa)
 
-        return Response({
-            'mensaje': 'Reserva marcada como no asistió'
-    })
+        info_preorden = {}
+        try:
+            info_preorden = cancelar_preorden_por_reserva(reserva, request.user)
+        except Exception:
+            pass
 
+        respuesta = {'mensaje': 'Reserva marcada como no asistió'}
+        respuesta.update(info_preorden)
+        return Response(respuesta)
+
+    # ──────────────────────────────────────────────────────────────────────
+    # FINALIZAR
+    # ──────────────────────────────────────────────────────────────────────
     @action(detail=True, methods=['patch'])
     def finalizar(self, request, pk=None):
         reserva = self.get_object()
@@ -502,50 +534,3 @@ def actualizar_estado_mesa(mesa):
         mesa.estado = 'disponible'
 
     mesa.save()
-
-
-class CategoriaViewSet(viewsets.ModelViewSet):
-    queryset = Categoria.objects.all()
-    serializer_class = CategoriaSerializer
-    authentication_classes = [JWTAuthentication]
-
-    def get_permissions(self):
-        if self.action in ['list', 'retrieve']:
-            return [IsAuthenticatedJWT()]
-        return [IsAdmin()]
-
-    def destroy(self, request, *args, **kwargs):
-        categoria = self.get_object()
-        if categoria.productos.filter(estado=True).exists():
-            return Response({'error': 'No se puede eliminar una categoría con productos activos'}, status=status.HTTP_400_BAD_REQUEST)
-        return super().destroy(request, *args, **kwargs)
-
-class ProductoViewSet(viewsets.ModelViewSet):
-    queryset = Producto.objects.all()
-    serializer_class = ProductoSerializer
-    authentication_classes = [JWTAuthentication]
-
-    def get_permissions(self):
-        if self.action in ['list', 'retrieve', 'disponibles']:
-            return [IsAuthenticatedJWT()]
-        return [IsAdmin()]
-
-    @action(detail=False, methods=['get'])
-    def disponibles(self, request):
-        productos = Producto.objects.filter(estado=True, stock__gt=0, categoria__estado=True)
-        serializer = self.get_serializer(productos, many=True)
-        return Response(serializer.data)
-
-class PedidoViewSet(viewsets.ReadOnlyModelViewSet):
-    queryset = Pedido.objects.all()
-    serializer_class = PedidoSerializer
-    authentication_classes = [JWTAuthentication]
-
-    def get_permissions(self):
-        return [IsAuthenticatedJWT()]
-
-    def get_queryset(self):
-        user = self.request.user
-        if user.cod_rol.cod_rol == 'admin':
-            return Pedido.objects.all()
-        return Pedido.objects.filter(usuario=user)
