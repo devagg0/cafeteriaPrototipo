@@ -9,7 +9,8 @@ from usuarios.views import decodificar_token
 from pedidos.services import cancelar_preorden_por_reserva, convertir_preorden_a_pedido_por_checkin
 from django.db.models import Q
 from datetime import datetime
-from pedidos.models import Producto, Preorden, DetallePreorden
+from producto.models import Producto
+from pedidos.models import Preorden, DetallePreorden
 
 
 # --- AUTENTICACIÓN CUSTOM ---
@@ -308,6 +309,13 @@ class ReservaViewSet(viewsets.ModelViewSet):
                 if cantidad <= 0:
                     reserva.delete()
                     return Response({'error': 'La cantidad debe ser mayor a 0'}, status=status.HTTP_400_BAD_REQUEST)
+
+                if cantidad > producto.stock:
+                    reserva.delete()
+                    return Response(
+                        {'error': f'Stock insuficiente para el producto "{producto.nombre}": disponible {producto.stock}, solicitado {cantidad}'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
 
                 subtotal = producto.precio * cantidad
                 total_preorden += subtotal

@@ -1,19 +1,6 @@
 from rest_framework import serializers
-from .models import Categoria, Producto, Pedido, DetallePedido, Preorden, DetallePreorden
-
-class CategoriaSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Categoria
-        fields = '__all__'
-
-class ProductoSerializer(serializers.ModelSerializer):
-    categoria_nombre = serializers.ReadOnlyField(source='categoria.nombre')
-    stock_disponible = serializers.SerializerMethodField()
-    class Meta:
-        model = Producto
-        fields = '__all__'
-    def get_stock_disponible(self, obj):
-        return obj.stock - obj.stock_reservado
+from producto.models import Categoria, Producto
+from .models import Pedido, DetallePedido, Preorden, DetallePreorden
 
 class DetallePedidoSerializer(serializers.ModelSerializer):
     producto_nombre = serializers.ReadOnlyField(source='producto.nombre')

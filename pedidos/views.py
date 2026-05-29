@@ -8,9 +8,10 @@ from rest_framework.permissions import BasePermission
 from django.db import transaction
 from django.utils import timezone
 
-from .models import Categoria, Producto, Pedido, DetallePedido, Preorden, DetallePreorden
+from producto.models import Categoria, Producto
+from producto.serializers import CategoriaSerializer, ProductoSerializer
+from .models import Pedido, DetallePedido, Preorden, DetallePreorden
 from .serializers import (
-    CategoriaSerializer, ProductoSerializer,
     PedidoSerializer, DetallePedidoSerializer,
     PreordenSerializer, DetallePreordenSerializer,
 )
@@ -56,50 +57,6 @@ class IsAuthenticatedJWT(BasePermission):
     def has_permission(self, request, view):
         return bool(request.user)
 
-
-# ---------------------------------------------------------------------------
-# CategoriaViewSet
-# ---------------------------------------------------------------------------
-
-class CategoriaViewSet(viewsets.ModelViewSet):
-    queryset = Categoria.objects.all()
-    serializer_class = CategoriaSerializer
-    authentication_classes = [JWTAuthentication]
-
-    def get_permissions(self):
-        if self.action in ['list', 'retrieve']:
-            return [IsAuthenticatedJWT()]
-        return [IsAdmin()]
-
-
-# ---------------------------------------------------------------------------
-# ProductoViewSet
-# ---------------------------------------------------------------------------
-
-class ProductoViewSet(viewsets.ModelViewSet):
-    queryset = Producto.objects.all()
-    serializer_class = ProductoSerializer
-    authentication_classes = [JWTAuthentication]
-    parser_classes = [MultiPartParser, FormParser]
-
-    def get_permissions(self):
-        if self.action in ['list', 'retrieve', 'disponibles', 'activos']:
-            return [IsAuthenticatedJWT()]
-        return [IsAdmin()]
-
-    @action(detail=False, methods=['get'])
-    def disponibles(self, request):
-        """Productos con estado activo y stock > 0."""
-        qs = Producto.objects.filter(estado=True, stock__gt=0)
-        serializer = self.get_serializer(qs, many=True)
-        return Response(serializer.data)
-
-    @action(detail=False, methods=['get'])
-    def activos(self, request):
-        """Productos con estado activo (stock puede ser 0)."""
-        qs = Producto.objects.filter(estado=True)
-        serializer = self.get_serializer(qs, many=True)
-        return Response(serializer.data)
 
 
 # ---------------------------------------------------------------------------
@@ -324,6 +281,12 @@ class PreordenViewSet(viewsets.ModelViewSet):
             if cantidad <= 0:
                 return Response(
                     {'error': 'La cantidad debe ser mayor a 0'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if cantidad > producto.stock:
+                return Response(
+                    {'error': f'Stock insuficiente para el producto "{producto.nombre}": disponible {producto.stock}, solicitado {cantidad}'},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             subtotal = producto.precio * cantidad

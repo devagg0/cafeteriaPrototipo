@@ -11,23 +11,10 @@ class Migration(migrations.Migration):
     dependencies = [
         ('reservas', '0010_remove_producto_categoria_and_more'),
         ('usuarios', '0009_usuario_foto_perfil'),
+        ('producto', '0001_initial'),
     ]
 
     operations = [
-        migrations.CreateModel(
-            name='Categoria',
-            fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('nombre', models.CharField(max_length=100, unique=True)),
-                ('descripcion', models.TextField(blank=True, null=True)),
-                ('estado', models.BooleanField(default=True)),
-                ('created_at', models.DateTimeField(auto_now_add=True)),
-                ('updated_at', models.DateTimeField(auto_now=True)),
-            ],
-            options={
-                'db_table': 'categoria',
-            },
-        ),
         migrations.CreateModel(
             name='Pedido',
             fields=[
@@ -65,25 +52,6 @@ class Migration(migrations.Migration):
             },
         ),
         migrations.CreateModel(
-            name='Producto',
-            fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('nombre', models.CharField(max_length=150)),
-                ('descripcion', models.TextField(blank=True, null=True)),
-                ('precio', models.DecimalField(decimal_places=2, max_digits=10)),
-                ('stock', models.IntegerField(default=0)),
-                ('stock_reservado', models.IntegerField(default=0)),
-                ('imagen', models.ImageField(blank=True, null=True, upload_to='productos/')),
-                ('estado', models.BooleanField(default=True)),
-                ('created_at', models.DateTimeField(auto_now_add=True)),
-                ('updated_at', models.DateTimeField(auto_now=True)),
-                ('categoria', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='productos', to='pedidos.categoria')),
-            ],
-            options={
-                'db_table': 'producto',
-            },
-        ),
-        migrations.CreateModel(
             name='DetallePreorden',
             fields=[
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
@@ -93,7 +61,7 @@ class Migration(migrations.Migration):
                 ('created_at', models.DateTimeField(auto_now_add=True)),
                 ('updated_at', models.DateTimeField(auto_now=True)),
                 ('preorden', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='detalles', to='pedidos.preorden')),
-                ('producto', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='pedidos.producto')),
+                ('producto', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='producto.producto')),
             ],
             options={
                 'db_table': 'detalle_preorden',
@@ -109,7 +77,7 @@ class Migration(migrations.Migration):
                 ('created_at', models.DateTimeField(auto_now_add=True)),
                 ('updated_at', models.DateTimeField(auto_now=True)),
                 ('pedido', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='detalles', to='pedidos.pedido')),
-                ('producto', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='pedidos.producto')),
+                ('producto', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='producto.producto')),
             ],
             options={
                 'db_table': 'detalle_pedido',
