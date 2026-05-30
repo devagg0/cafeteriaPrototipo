@@ -3,8 +3,9 @@ from producto.models import Categoria, Producto
 from .models import Pedido, DetallePedido, Preorden, DetallePreorden
 
 class DetallePedidoSerializer(serializers.ModelSerializer):
-    producto_nombre = serializers.ReadOnlyField(source='producto.nombre')
-    producto_imagen = serializers.SerializerMethodField()
+    producto_nombre    = serializers.ReadOnlyField(source='producto.nombre')
+    producto_categoria = serializers.ReadOnlyField(source='producto.categoria.nombre')
+    producto_imagen    = serializers.SerializerMethodField()
     class Meta:
         model = DetallePedido
         fields = '__all__'
