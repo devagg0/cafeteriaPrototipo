@@ -6,6 +6,9 @@ class Pedido(models.Model):
     ESTADOS_PEDIDO = [
         ('pendiente', 'Pendiente'),
         ('confirmado', 'Confirmado'),
+        ('en_preparacion', 'En preparación'),
+        ('lista', 'Lista'),
+        ('entregada', 'Entregada'),
         ('cancelado', 'Cancelado'),
     ]
     reserva = models.OneToOneField('reservas.Reserva', on_delete=models.CASCADE, related_name='pedido', null=True, blank=True)
@@ -13,6 +16,7 @@ class Pedido(models.Model):
     mesa = models.ForeignKey('reservas.Mesa', on_delete=models.SET_NULL, null=True, blank=True, related_name='pedidos_directos')
     usuario = models.ForeignKey('usuarios.Usuario', on_delete=models.CASCADE, related_name='pedidos')
     total = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    notas = models.TextField(blank=True, null=True)
     estado = models.CharField(max_length=20, choices=ESTADOS_PEDIDO, default='pendiente')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -30,6 +34,7 @@ class DetallePedido(models.Model):
     cantidad = models.IntegerField()
     precio_unitario = models.DecimalField(max_digits=10, decimal_places=2)
     subtotal = models.DecimalField(max_digits=10, decimal_places=2)
+    observaciones = models.TextField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     class Meta:
@@ -37,6 +42,31 @@ class DetallePedido(models.Model):
         app_label = 'pedidos'
     def __str__(self):
         return f'Detalle {self.id} - Producto {self.producto.nombre}'
+
+class Notificacion(models.Model):
+    usuario_destino = models.ForeignKey(
+        'usuarios.Usuario',
+        on_delete=models.CASCADE,
+        related_name='notificaciones',
+    )
+    pedido = models.ForeignKey(
+        Pedido,
+        on_delete=models.CASCADE,
+        related_name='notificaciones',
+        null=True,
+        blank=True,
+    )
+    titulo = models.CharField(max_length=100)
+    mensaje = models.TextField()
+    leido = models.BooleanField(default=False)
+    fecha_creacion = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'notificacion'
+        app_label = 'pedidos'
+
+    def __str__(self):
+        return f'{self.titulo} - {self.usuario_destino.nombre}'
 
 class Preorden(models.Model):
     ESTADOS = [

@@ -5,16 +5,20 @@ from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.permissions import BasePermission
+from rest_framework.views import APIView
 from django.db import transaction
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 
 from producto.models import Categoria, Producto
 from producto.serializers import CategoriaSerializer, ProductoSerializer
-from .models import Pedido, DetallePedido, Preorden, DetallePreorden
+from .models import Pedido, DetallePedido, Preorden, DetallePreorden, Notificacion
 from .serializers import (
     PedidoSerializer, DetallePedidoSerializer,
     PreordenSerializer, DetallePreordenSerializer,
+    CocinaComandaSerializer, CocinaComandaDetailSerializer,
 )
+from .permissions import IsCocinero
 from usuarios.models import Usuario, Cliente, Bitacora
 from usuarios.views import decodificar_token
 from reservas.models import SalaTematica, Mesa, Reserva
@@ -53,6 +57,14 @@ class IsEmpleadoOrAdmin(BasePermission):
         )
 
 
+class IsMeseroOrAdmin(BasePermission):
+    def has_permission(self, request, view):
+        return bool(
+            request.user and
+            request.user.cod_rol.cod_rol in ['admin', 'mesero']
+        )
+
+
 class IsAuthenticatedJWT(BasePermission):
     def has_permission(self, request, view):
         return bool(request.user)
@@ -68,6 +80,11 @@ class PedidoViewSet(viewsets.ModelViewSet):
     serializer_class = PedidoSerializer
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsEmpleadoOrAdmin]
+
+    def get_permissions(self):
+        if self.action == 'crear_por_mesero':
+            return [IsMeseroOrAdmin()]
+        return [IsEmpleadoOrAdmin()]
 
     @action(detail=False, methods=['post'])
     def crear_por_mesero(self, request):
@@ -90,6 +107,11 @@ class PedidoViewSet(viewsets.ModelViewSet):
             return Response(
                 {'error': 'Debe incluir al menos un producto'},
                 status=status.HTTP_400_BAD_REQUEST,
+            )
+        if request.user.cod_rol.cod_rol not in ['admin', 'mesero']:
+            return Response(
+                {'error': 'Solo el mesero o administrador puede crear pedidos directos.'},
+                status=status.HTTP_403_FORBIDDEN,
             )
 
         try:
@@ -379,3 +401,115 @@ class PreordenViewSet(viewsets.ModelViewSet):
             detalles=f'Preorden {preorden.id} cancelada manualmente',
         )
         return Response({'mensaje': 'Preorden cancelada', 'estado': preorden.estado})
+
+
+class CocinaPerfilView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsCocinero]
+
+    def get(self, request):
+        usuario = request.user
+        cliente = getattr(usuario, 'cliente', None)
+
+        data = {
+            'id': usuario.id_usuario,
+            'nombre': usuario.nombre,
+            'correo': usuario.correo,
+            'telefono': cliente.telefono if cliente else None,
+            'direccion': cliente.direccion if cliente else None,
+            'rol': 'Cocinero',
+        }
+        return Response(data)
+
+
+class CocinaComandasView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsCocinero]
+
+    def get(self, request):
+        pedidos = Pedido.objects.filter(
+            estado__in=['pendiente', 'confirmado', 'en_preparacion', 'lista']
+        ).select_related(
+            'reserva__cliente__id_usuario',
+            'reserva__sala',
+            'reserva__mesa',
+            'sala',
+            'mesa',
+            'usuario__cod_rol',
+        ).prefetch_related('detalles__producto')
+
+        serializer = CocinaComandaSerializer(pedidos, many=True, context={'request': request})
+        return Response(serializer.data)
+
+
+class CocinaComandaDetailView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsCocinero]
+
+    def get(self, request, id):
+        pedido = get_object_or_404(
+            Pedido.objects.filter(estado__in=['pendiente', 'confirmado', 'en_preparacion', 'lista'])
+            .select_related(
+                'reserva__cliente__id_usuario',
+                'reserva__sala',
+                'reserva__mesa',
+                'sala',
+                'mesa',
+                'usuario__cod_rol',
+            ).prefetch_related('detalles__producto'),
+            id=id,
+        )
+        serializer = CocinaComandaDetailSerializer(pedido, context={'request': request})
+        return Response(serializer.data)
+
+
+class CocinaComandaEnPreparacionView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsCocinero]
+
+    def patch(self, request, id):
+        pedido = get_object_or_404(Pedido, id=id)
+        if pedido.estado not in ['pendiente', 'confirmado']:
+            return Response(
+                {'error': 'Solo se puede pasar a En preparación desde Pendiente o Confirmado.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        pedido.estado = 'en_preparacion'
+        pedido.save()
+        serializer = CocinaComandaDetailSerializer(pedido, context={'request': request})
+        return Response(serializer.data)
+
+
+class CocinaComandaListaView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsCocinero]
+
+    def patch(self, request, id):
+        pedido = get_object_or_404(Pedido, id=id)
+        if pedido.estado != 'en_preparacion':
+            return Response(
+                {'error': 'Solo se puede marcar como Lista desde el estado En preparación.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        pedido.estado = 'lista'
+        pedido.save()
+
+        mesero = None
+        if pedido.usuario and getattr(pedido.usuario, 'cod_rol', None) and pedido.usuario.cod_rol.cod_rol == 'mesero':
+            mesero = pedido.usuario
+
+        mensaje = 'Comanda marcada como Lista.'
+        if mesero:
+            Notificacion.objects.create(
+                usuario_destino=mesero,
+                pedido=pedido,
+                titulo='Pedido listo',
+                mensaje=f'El pedido #{pedido.id} está listo para recoger en cocina.',
+                leido=False,
+            )
+            mensaje += ' Notificación enviada al mesero responsable.'
+        else:
+            mensaje += ' No se encontró mesero responsable para notificar.'
+
+        serializer = CocinaComandaDetailSerializer(pedido, context={'request': request})
+        return Response({'message': mensaje, 'pedido': serializer.data})

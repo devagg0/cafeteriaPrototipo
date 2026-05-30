@@ -600,8 +600,18 @@ def lista_empleados(request):
             if Usuario.objects.filter(correo=correo).exists():
                 return JsonResponse({'error': 'El correo ya existe'}, status=400)
 
-            # 🔥 rol empleado
-            rol = Rol.objects.get(cod_rol='emp')
+            
+            # 🔥 asignar rol según el cargo seleccionado
+            cargo_normalizado = cargo.strip().lower()
+
+            if cargo_normalizado == 'mesero':
+                rol = Rol.objects.get(cod_rol='mesero')
+            elif cargo_normalizado == 'cocinero':
+                rol = Rol.objects.get(cod_rol='cocinero')
+            else:
+                rol = Rol.objects.get(cod_rol='emp')
+            
+            
 
             # 🔥 crear usuario
             usuario = Usuario.objects.create(

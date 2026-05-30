@@ -26,6 +26,106 @@ class PedidoSerializer(serializers.ModelSerializer):
         model = Pedido
         fields = '__all__'
 
+class CocinaDetallePedidoSerializer(serializers.ModelSerializer):
+    producto_id = serializers.ReadOnlyField(source='producto.id')
+    producto_nombre = serializers.ReadOnlyField(source='producto.nombre')
+
+    class Meta:
+        model = DetallePedido
+        fields = [
+            'id',
+            'producto_id',
+            'producto_nombre',
+            'cantidad',
+            'precio_unitario',
+            'subtotal',
+            'observaciones',
+        ]
+
+class CocinaComandaSerializer(serializers.ModelSerializer):
+    id_pedido = serializers.IntegerField(source='id')
+    origen = serializers.SerializerMethodField()
+    cliente = serializers.SerializerMethodField()
+    sala = serializers.SerializerMethodField()
+    mesa = serializers.SerializerMethodField()
+    fecha = serializers.SerializerMethodField()
+    hora = serializers.SerializerMethodField()
+    productos = CocinaDetallePedidoSerializer(source='detalles', many=True, read_only=True)
+    observaciones = serializers.CharField(source='notas', read_only=True, allow_null=True)
+    total = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
+
+    class Meta:
+        model = Pedido
+        fields = [
+            'id_pedido',
+            'origen',
+            'cliente',
+            'sala',
+            'mesa',
+            'fecha',
+            'hora',
+            'estado',
+            'productos',
+            'observaciones',
+            'total',
+        ]
+
+    def get_origen(self, obj):
+        return 'preorden' if obj.reserva else 'pedido_normal'
+
+    def get_cliente(self, obj):
+        if obj.reserva and obj.reserva.cliente and obj.reserva.cliente.id_usuario:
+            return {
+                'id': obj.reserva.cliente.id_usuario.id_usuario,
+                'nombre': obj.reserva.cliente.id_usuario.nombre,
+            }
+        return None
+
+    def get_sala(self, obj):
+        if obj.sala:
+            return obj.sala.nombre
+        if obj.reserva and obj.reserva.sala:
+            return obj.reserva.sala.nombre
+        return None
+
+    def get_mesa(self, obj):
+        if obj.mesa:
+            return obj.mesa.nombre
+        if obj.reserva and obj.reserva.mesa:
+            return obj.reserva.mesa.nombre
+        return None
+
+    def get_fecha(self, obj):
+        if obj.reserva and obj.reserva.fecha:
+            return obj.reserva.fecha
+        return obj.created_at.date()
+
+    def get_hora(self, obj):
+        if obj.reserva and obj.reserva.hora_inicio:
+            return obj.reserva.hora_inicio
+        return obj.created_at.time()
+
+class CocinaComandaDetailSerializer(CocinaComandaSerializer):
+    fecha_creacion = serializers.DateTimeField(source='created_at', read_only=True)
+    fecha_actualizacion = serializers.DateTimeField(source='updated_at', read_only=True)
+    mesero_responsable = serializers.SerializerMethodField()
+
+    class Meta(CocinaComandaSerializer.Meta):
+        fields = CocinaComandaSerializer.Meta.fields + [
+            'fecha_creacion',
+            'fecha_actualizacion',
+            'mesero_responsable',
+        ]
+
+    def get_mesero_responsable(self, obj):
+        if obj.usuario and getattr(obj.usuario, 'cod_rol', None) and obj.usuario.cod_rol.cod_rol == 'mesero':
+            return {
+                'id': obj.usuario.id_usuario,
+                'nombre': obj.usuario.nombre,
+                'correo': obj.usuario.correo,
+            }
+        return None
+
 class DetallePreordenSerializer(serializers.ModelSerializer):
     producto_nombre = serializers.ReadOnlyField(source='producto.nombre')
     producto_categoria = serializers.ReadOnlyField(source='producto.categoria.nombre')
