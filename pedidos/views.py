@@ -63,7 +63,13 @@ class IsMeseroOrAdmin(BasePermission):
             request.user and
             request.user.cod_rol.cod_rol in ['admin', 'mesero']
         )
-
+    
+class IsMeseroOnly(BasePermission):
+    def has_permission(self, request, view):
+        return bool(
+            request.user and
+            request.user.cod_rol.cod_rol == 'mesero'
+        )
 
 class IsAuthenticatedJWT(BasePermission):
     def has_permission(self, request, view):
@@ -83,7 +89,11 @@ class PedidoViewSet(viewsets.ModelViewSet):
 
     def get_permissions(self):
         if self.action == 'crear_por_mesero':
-            return [IsMeseroOrAdmin()]
+          return [IsMeseroOrAdmin()]
+
+        if self.action in ['marcar_entregado', 'cancelar_pedido']:
+          return [IsMeseroOnly()]
+
         return [IsEmpleadoOrAdmin()]
 
     @action(detail=False, methods=['post'])
@@ -186,7 +196,107 @@ class PedidoViewSet(viewsets.ModelViewSet):
 
         serializer = self.get_serializer(pedido)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+    
+    @action(detail=True, methods=['patch'])
+    def marcar_entregado(self, request, pk=None):
+        """
+        CU18 — Mesero marca un pedido como entregado.
+        Solo permite: lista → entregada.
+        """
+        pedido = self.get_object()
 
+        if request.user.cod_rol.cod_rol != 'mesero':
+            return Response(
+                {'error': 'Solo el mesero puede marcar pedidos como entregados.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        if pedido.estado == 'entregada':
+            return Response(
+                {'error': 'El pedido ya fue entregado.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if pedido.estado == 'cancelado':
+            return Response(
+                {'error': 'No se puede entregar un pedido cancelado.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if pedido.estado != 'lista':
+            return Response(
+                {'error': 'Solo se puede entregar un pedido que esté en estado Lista.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        pedido.estado = 'entregada'
+        pedido.save()
+
+        if pedido.mesa:
+            pedido.mesa.estado = 'disponible'
+            pedido.mesa.save()
+
+        Bitacora.objects.create(
+            usuario=request.user,
+            accion='marcar pedido entregado',
+            detalles=f'Pedido {pedido.id} entregado'
+        )
+
+        serializer = self.get_serializer(pedido)
+
+        return Response({
+            'mensaje': 'Pedido marcado como entregado.',
+            'pedido': serializer.data
+        }, status=status.HTTP_200_OK)
+    
+    @action(detail=True, methods=['patch'])
+    def cancelar_pedido(self, request, pk=None):
+        """
+        CU18 — Mesero cancela un pedido antes de preparación.
+        Solo permite: pendiente/confirmado → cancelado.
+        """
+        pedido = self.get_object()
+
+        if request.user.cod_rol.cod_rol != 'mesero':
+            return Response(
+                {'error': 'Solo el mesero puede cancelar pedidos.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        if pedido.estado == 'cancelado':
+            return Response(
+                {'error': 'El pedido ya está cancelado.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if pedido.estado in ['en_preparacion', 'lista', 'entregada']:
+            return Response(
+                {'error': 'No se puede cancelar un pedido que ya está en preparación, listo o entregado.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if pedido.estado not in ['pendiente', 'confirmado']:
+            return Response(
+                {'error': f'No se puede cancelar un pedido en estado {pedido.estado}.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Solo cambiar estado a 'cancelado' — no tocar stock, mesas, reservas, salas, cocina, ni comanda.
+        pedido.estado = 'cancelado'
+        pedido.save()
+
+        Bitacora.objects.create(
+            usuario=request.user,
+            accion='cancelar pedido',
+            detalles=f'Pedido {pedido.id} cancelado'
+        )
+
+        serializer = self.get_serializer(pedido)
+
+        return Response({
+            'mensaje': 'Pedido cancelado correctamente.',
+            'pedido': serializer.data
+        }, status=status.HTTP_200_OK)
 
 # ---------------------------------------------------------------------------
 # PreordenViewSet
