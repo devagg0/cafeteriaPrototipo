@@ -107,6 +107,24 @@ class NotificacionReserva(models.Model):
 
     enviada_en = models.DateTimeField(auto_now_add=True)
 
+    # Campos para gestión in-app
+    leido = models.BooleanField(default=False)
+
+    ESTADO_ENVIO = [
+        ('pendiente', 'Pendiente'),
+        ('enviado', 'Enviado'),
+        ('fallo', 'Fallo'),
+    ]
+    estado_envio = models.CharField(max_length=20, choices=ESTADO_ENVIO, default='pendiente')
+    intentos = models.IntegerField(default=0)
+    enviado_por = models.ForeignKey(
+        'usuarios.Usuario',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='notificaciones_enviadas'
+    )
+
     class Meta:
         db_table = 'notificacion_reserva'
 

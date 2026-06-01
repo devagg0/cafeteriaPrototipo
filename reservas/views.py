@@ -11,6 +11,7 @@ from django.db.models import Q
 from datetime import datetime
 from producto.models import Producto
 from pedidos.models import Preorden, DetallePreorden
+from reservas.notificaciones import services as notif_services
 
 
 # --- AUTENTICACIÓN CUSTOM ---
@@ -351,6 +352,13 @@ class ReservaViewSet(viewsets.ModelViewSet):
             detalles=f'Reserva ID {reserva.id} - Sala {sala.nombre} - Mesa {mesa.nombre}'
         )
 
+        # Notificación in-app: reserva creada
+        try:
+            mensaje = f'Reserva creada: Sala {sala.nombre} - Mesa {mesa.nombre} - {fecha} {hora_inicio}'
+            notif_services.crear_notificacion_reserva(reserva, 'modificacion', mensaje, enviado_por=request.user)
+        except Exception:
+            pass
+
 
         serializer = self.get_serializer(reserva)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
@@ -393,6 +401,13 @@ class ReservaViewSet(viewsets.ModelViewSet):
                 detalles=f'Reserva ID {reserva.id} cancelada',
             )
 
+        # Notificación in-app: cancelación
+        try:
+            mensaje = f'Tu reserva (ID {reserva.id}) ha sido cancelada'
+            notif_services.crear_notificacion_reserva(reserva, 'cancelacion', mensaje, enviado_por=request.user)
+        except Exception:
+            pass
+
         # 2. Cascade: cancelar preorden asociada (aislado — no bloquea si falla)
         info_preorden = {}
         try:
@@ -428,6 +443,12 @@ class ReservaViewSet(viewsets.ModelViewSet):
             accion='confirmar reserva',
             detalles=f'Reserva ID {reserva.id} confirmada',
         )
+        # Notificación in-app: confirmación
+        try:
+            mensaje = f'Tu reserva (ID {reserva.id}) ha sido confirmada para {reserva.fecha} {reserva.hora_inicio}'
+            notif_services.crear_notificacion_reserva(reserva, 'confirmacion', mensaje, enviado_por=request.user)
+        except Exception:
+            pass
         return Response({'mensaje': 'Reserva confirmada correctamente'})
 
     # ──────────────────────────────────────────────────────────────────────
@@ -457,6 +478,13 @@ class ReservaViewSet(viewsets.ModelViewSet):
                 accion='check-in reserva',
                 detalles=f'Reserva ID {reserva.id} iniciada (check-in)',
             )
+
+        # Notificación in-app: check-in realizada
+        try:
+            mensaje = f'Check-in realizado para reserva ID {reserva.id}. Buen provecho.'
+            notif_services.crear_notificacion_reserva(reserva, 'modificacion', mensaje, enviado_por=request.user)
+        except Exception:
+            pass
 
         # Cascade: convertir preorden en pedido real (solo aquí, en check-in)
         info_preorden = {}

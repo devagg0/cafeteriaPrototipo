@@ -15,6 +15,7 @@ router.register(r'pedidos', PedidoViewSet, basename='pedidos')
 router.register(r'preordenes', PreordenViewSet, basename='preordenes')
 
 urlpatterns = [
+    path('pedidos/historial/', include('pedidos.historial.urls')),
     path('cocina/perfil/', CocinaPerfilView.as_view(), name='cocina-perfil'),
     path('cocina/comandas/', CocinaComandasView.as_view(), name='cocina-comandas'),
     path('cocina/comandas/<int:id>/', CocinaComandaDetailView.as_view(), name='cocina-comanda-detail'),
