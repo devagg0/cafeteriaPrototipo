@@ -80,11 +80,13 @@ def convertir_preorden_a_pedido_por_checkin(reserva, usuario):
             'faltantes': faltantes,
         }
     total = sum(d.subtotal for d in preorden.detalles.all())
+    usuario_mesero = getattr(preorden, 'usuario_mesero', None)
+    usuario_pedido = usuario_mesero or usuario
     pedido = Pedido.objects.create(
         reserva=reserva,
         sala=reserva.sala,
         mesa=reserva.mesa,
-        usuario=usuario,
+        usuario=usuario_pedido,
         total=total,
         estado='confirmado',
     )
@@ -105,8 +107,9 @@ def convertir_preorden_a_pedido_por_checkin(reserva, usuario):
         usuario=usuario,
         accion='preorden → con_pedido (check-in)',
         detalles=(
-            f'Preorden {preorden.id} → Pedido {pedido.id} '
-            f'al hacer check-in de Reserva {reserva.id}'
+            f'Preorden {preorden.id} → Pedido {pedido.id}; '
+            f'Reserva {reserva.id}; operador_checkin={usuario.nombre}; '
+            f'mesero_responsable={usuario_mesero.nombre if usuario_mesero else "Sin mesero asignado"}'
         ),
     )
     return {

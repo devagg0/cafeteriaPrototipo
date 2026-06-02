@@ -8,7 +8,8 @@ from usuarios.models import Usuario, Cliente, Bitacora
 from usuarios.views import decodificar_token
 from pedidos.services import cancelar_preorden_por_reserva, convertir_preorden_a_pedido_por_checkin
 from django.db.models import Q
-from datetime import datetime
+from django.utils import timezone
+from datetime import datetime, timedelta
 from producto.models import Producto
 from pedidos.models import Preorden, DetallePreorden
 from reservas.notificaciones import services as notif_services
@@ -115,6 +116,9 @@ class SalaTematicaViewSet(viewsets.ModelViewSet):
         except ValueError:
             return Response({'error': 'Formato de fecha inválido. Use YYYY-MM-DD'}, status=status.HTTP_400_BAD_REQUEST)
 
+        ahora = timezone.localtime()
+        limite_reserva = ahora + timedelta(hours=3)
+
         # Horarios fijos
         horarios = [
             ("10:00:00", "11:30:00"),
@@ -132,21 +136,26 @@ class SalaTematicaViewSet(viewsets.ModelViewSet):
 
         disponibilidad = []
         for inicio, fin in horarios:
+            inicio_dt = timezone.make_aware(datetime.combine(fecha, datetime.strptime(inicio, '%H:%M:%S').time()))
+            bloque_fuera_anticipacion = inicio_dt <= limite_reserva
             mesas_reservadas_ids = reservas_dia.filter(hora_inicio=inicio).values_list('mesa_id', flat=True)
             
             mesas_info = []
             for m in mesas_activas:
+                disponible_por_mesa = m.id not in mesas_reservadas_ids
                 mesas_info.append({
                     'id': m.id,
                     'nombre': m.nombre,
                     'capacidad': m.capacidad,
-                    'disponible': (m.id not in mesas_reservadas_ids),
+                    'disponible': disponible_por_mesa and not bloque_fuera_anticipacion,
                     'estado': m.estado
                 })
             
             disponibilidad.append({
                 'hora_inicio': inicio,
                 'hora_fin': fin,
+                'bloqueado_por_anticipacion': bloque_fuera_anticipacion,
+                'mensaje_bloqueo': 'Debes reservar con al menos 3 horas de anticipacion. Selecciona un horario mas tarde.' if bloque_fuera_anticipacion else '',
                 'mesas': mesas_info
             })
 
@@ -251,6 +260,18 @@ class ReservaViewSet(viewsets.ModelViewSet):
             return Response({'error': 'Horario inválido'}, status=400)
 
         try:
+            hora_inicio_obj = datetime.strptime(hora_inicio, '%H:%M:%S').time()
+        except ValueError:
+            hora_inicio_obj = datetime.strptime(hora_inicio, '%H:%M').time()
+
+        inicio_reserva = timezone.make_aware(datetime.combine(fecha_obj, hora_inicio_obj))
+        if inicio_reserva <= timezone.localtime() + timedelta(hours=3):
+            return Response(
+                {'error': 'Debes reservar con al menos 3 horas de anticipacion. Selecciona un horario mas tarde para asegurar la disponibilidad de la mesa.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
             sala = SalaTematica.objects.get(id=sala_id)
             mesa = Mesa.objects.get(id=mesa_id, sala=sala)
         except (SalaTematica.DoesNotExist, Mesa.DoesNotExist):
@@ -349,7 +370,10 @@ class ReservaViewSet(viewsets.ModelViewSet):
         Bitacora.objects.create(
             usuario=request.user,
             accion='crear reserva',
-            detalles=f'Reserva ID {reserva.id} - Sala {sala.nombre} - Mesa {mesa.nombre}'
+            detalles=(
+                f'Creo la reserva #{reserva.id} para {fecha} de {hora_inicio} a {hora_fin}. '
+                f'Sala: {sala.nombre}. Mesa: {mesa.nombre}. Personas: {cantidad_personas}.'
+            )
         )
 
         # Notificación in-app: reserva creada

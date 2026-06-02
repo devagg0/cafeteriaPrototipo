@@ -31,10 +31,19 @@ from reservas.models import SalaTematica, Mesa, Reserva
 class JWTAuthentication(BaseAuthentication):
     def authenticate(self, request):
         auth_header = request.headers.get('Authorization')
+        # DEBUG: imprimir header para depuración rápida
+        try:
+            print(f"[JWTAuthentication] Authorization header: {auth_header}")
+        except Exception:
+            pass
         if not auth_header or not auth_header.startswith('Bearer '):
             return None
         token = auth_header.split(' ')[1]
         payload = decodificar_token(token)
+        try:
+            print(f"[JWTAuthentication] Decoded payload: {payload}")
+        except Exception:
+            pass
         if isinstance(payload, dict) and payload.get('error'):
             raise AuthenticationFailed(payload['error'])
         try:
@@ -63,6 +72,14 @@ class IsMeseroOrAdmin(BasePermission):
             request.user and
             request.user.cod_rol.cod_rol in ['admin', 'mesero']
         )
+
+
+class IsEmpleadoAtencionOrAdmin(BasePermission):
+    def has_permission(self, request, view):
+        return bool(
+            request.user and
+            request.user.cod_rol.cod_rol in ['admin', 'mesero', 'emp']
+        )
     
 class IsMeseroOnly(BasePermission):
     def has_permission(self, request, view):
@@ -89,10 +106,13 @@ class PedidoViewSet(viewsets.ModelViewSet):
 
     def get_permissions(self):
         if self.action == 'crear_por_mesero':
-          return [IsMeseroOrAdmin()]
+          return [IsEmpleadoAtencionOrAdmin()]
 
-        if self.action in ['marcar_entregado', 'cancelar_pedido']:
-          return [IsMeseroOnly()]
+        if self.action == 'marcar_entregado':
+                    return [IsEmpleadoAtencionOrAdmin()]
+
+        if self.action == 'cancelar_pedido':
+                    return [IsMeseroOrAdmin()]
 
         return [IsEmpleadoOrAdmin()]
 
@@ -118,9 +138,9 @@ class PedidoViewSet(viewsets.ModelViewSet):
                 {'error': 'Debe incluir al menos un producto'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if request.user.cod_rol.cod_rol not in ['admin', 'mesero']:
+        if request.user.cod_rol.cod_rol not in ['admin', 'mesero', 'emp']:
             return Response(
-                {'error': 'Solo el mesero o administrador puede crear pedidos directos.'},
+                {'error': 'Solo el empleado o administrador puede crear pedidos directos.'},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -205,9 +225,9 @@ class PedidoViewSet(viewsets.ModelViewSet):
         """
         pedido = self.get_object()
 
-        if request.user.cod_rol.cod_rol != 'mesero':
+        if request.user.cod_rol.cod_rol not in ['admin', 'mesero', 'emp']:
             return Response(
-                {'error': 'Solo el mesero puede marcar pedidos como entregados.'},
+                {'error': 'Solo el empleado o administrador puede marcar pedidos como entregados.'},
                 status=status.HTTP_403_FORBIDDEN
             )
 
