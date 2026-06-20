@@ -53,22 +53,22 @@ class FlujoHorarioReservaTests(TestCase):
             estado=estado,
         )
 
-    def test_cliente_solo_cancela_con_una_hora_de_anticipacion(self):
+    def test_cliente_solo_cancela_con_30_minutos_de_anticipacion(self):
         ahora = timezone.localtime().replace(microsecond=0)
         permitida = self.crear_reserva(
-            ahora + timedelta(hours=2),
-            ahora + timedelta(hours=3),
+            ahora + timedelta(minutes=31),
+            ahora + timedelta(hours=1),
         )
         bloqueada = self.crear_reserva(
-            ahora + timedelta(minutes=30),
-            ahora + timedelta(hours=1, minutes=30),
+            ahora + timedelta(minutes=29),
+            ahora + timedelta(hours=1),
         )
 
         self.assertTrue(validar_cancelacion_cliente(permitida, ahora)[0])
         puede_cancelar, mensaje = validar_cancelacion_cliente(bloqueada, ahora)
         self.assertFalse(puede_cancelar)
-        self.assertIn('1 hora de anticipación', mensaje)
-        self.assertIn('soporte', mensaje)
+        self.assertIn('30 minutos de anticipación', mensaje)
+        self.assertNotIn('soporte', mensaje.lower())
 
     def test_checkin_se_habilita_desde_30_minutos_antes(self):
         ahora = timezone.localtime().replace(microsecond=0)

@@ -5,7 +5,7 @@ from django.utils import timezone
 from .models import Reserva
 
 
-ANTICIPACION_CANCELACION_CLIENTE = timedelta(hours=1)
+ANTICIPACION_CANCELACION_CLIENTE = timedelta(minutes=30)
 ANTICIPACION_CHECKIN = timedelta(minutes=30)
 
 
@@ -20,11 +20,7 @@ def validar_cancelacion_cliente(reserva, ahora=None):
     limite = fecha_hora_reserva(reserva, 'hora_inicio') - ANTICIPACION_CANCELACION_CLIENTE
 
     if ahora > limite:
-        return False, (
-            'No puedes cancelar esta reserva porque falta menos de una hora para su inicio. '
-            'La cancelación debe realizarse con al menos 1 hora de anticipación. '
-            'Comunícate con soporte para recibir ayuda.'
-        )
+        return False, 'No puedes cancelar esta reserva con menos de 30 minutos de anticipación.'
 
     return True, ''
 
