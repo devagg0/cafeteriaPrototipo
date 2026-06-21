@@ -17,10 +17,37 @@ class SalaTematicaSerializer(serializers.ModelSerializer):
 
 class MesaSerializer(serializers.ModelSerializer):
     sala_nombre = serializers.ReadOnlyField(source='sala.nombre')
+    cantidad_productos = serializers.SerializerMethodField()
+    total_pendiente = serializers.SerializerMethodField()
 
     class Meta:
         model = Mesa
         fields = '__all__'
+
+    def get_cantidad_productos(self, obj):
+        from pedidos.models import Pedido
+        from django.db.models import Sum
+        pedido = Pedido.objects.filter(
+            mesa=obj,
+            estado__in=['pendiente', 'confirmado', 'en_preparacion', 'lista']
+        ).exclude(
+            pagos__estado='exitoso'
+        ).first()
+        if pedido:
+            return pedido.detalles.aggregate(total_qty=Sum('cantidad'))['total_qty'] or 0
+        return 0
+
+    def get_total_pendiente(self, obj):
+        from pedidos.models import Pedido
+        pedido = Pedido.objects.filter(
+            mesa=obj,
+            estado__in=['pendiente', 'confirmado', 'en_preparacion', 'lista']
+        ).exclude(
+            pagos__estado='exitoso'
+        ).first()
+        if pedido:
+            return float(pedido.total)
+        return 0.0
 
     def validate(self, data):
         capacidad = data.get('capacidad')
