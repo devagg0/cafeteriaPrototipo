@@ -13,6 +13,7 @@ urlpatterns = [
     path('api/', include('reservas.urls')),
     path('api/', include('producto.urls')),
     path('api/', include('pedidos.urls')),
+    path('api/', include('finanzas.urls')),
 ]
 
 if settings.DEBUG:
