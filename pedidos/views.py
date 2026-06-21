@@ -643,3 +643,198 @@ class CocinaComandaListaView(APIView):
 
         serializer = CocinaComandaDetailSerializer(pedido, context={'request': request})
         return Response({'message': mensaje, 'pedido': serializer.data})
+
+
+class PedidoActivoMesaView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsEmpleadoOrAdmin]
+
+    def get(self, request, mesa_id):
+        pedido = Pedido.objects.filter(
+            mesa_id=mesa_id,
+            estado__in=['pendiente', 'confirmado', 'en_preparacion', 'lista']
+        ).exclude(
+            pagos__estado='exitoso'
+        ).first()
+
+        if not pedido:
+            return Response({'error': 'No hay pedido activo para esta mesa'}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = PedidoSerializer(pedido, context={'request': request})
+        return Response(serializer.data)
+
+
+class IniciarPedidoMesaView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsEmpleadoOrAdmin]
+
+    def post(self, request, mesa_id):
+        mesa = get_object_or_404(Mesa, id=mesa_id)
+        with transaction.atomic():
+            # Check if there is an active order
+            pedido = Pedido.objects.select_for_update().filter(
+                mesa=mesa,
+                estado__in=['pendiente', 'confirmado', 'en_preparacion', 'lista']
+            ).exclude(
+                pagos__estado='exitoso'
+            ).first()
+
+            if not pedido:
+                # If the mesa is disponible, transition it to occupied
+                if mesa.estado == 'disponible':
+                    reserva_futura = Reserva.objects.filter(
+                        mesa=mesa,
+                        fecha=timezone.localdate(),
+                        estado__in=['pendiente', 'confirmada']
+                    ).exists()
+                    if reserva_futura:
+                        return Response({'error': 'La mesa tiene una reserva activa para hoy y no puede ocuparse libremente'}, status=status.HTTP_400_BAD_REQUEST)
+                    mesa.estado = 'ocupada'
+                    mesa.save()
+
+                pedido = Pedido.objects.create(
+                    sala=mesa.sala,
+                    mesa=mesa,
+                    usuario=request.user,
+                    total=0.00,
+                    estado='pendiente'
+                )
+                Bitacora.objects.create(
+                    usuario=request.user,
+                    accion='iniciar pedido mesa',
+                    detalles=f'Pedido {pedido.id} iniciado para mesa {mesa.nombre}'
+                )
+
+            serializer = PedidoSerializer(pedido, context={'request': request})
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class AgregarDetallePedidoView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsEmpleadoOrAdmin]
+
+    def post(self, request, pedido_id):
+        pedido = get_object_or_404(Pedido, id=pedido_id)
+        if pedido.estado not in ['pendiente', 'confirmado']:
+            return Response({'error': f'No se pueden agregar productos a un pedido en estado {pedido.estado}'}, status=status.HTTP_400_BAD_REQUEST)
+
+        producto_id = request.data.get('producto_id')
+        cantidad = int(request.data.get('cantidad', 1))
+        observaciones = request.data.get('observaciones', '')
+
+        if cantidad <= 0:
+            return Response({'error': 'La cantidad debe ser mayor a 0'}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            pedido = Pedido.objects.select_for_update().get(id=pedido_id)
+            producto = Producto.objects.select_for_update().get(id=producto_id)
+
+            if producto.stock < cantidad:
+                return Response({
+                    'error': f'Stock insuficiente para "{producto.nombre}": disponible {producto.stock}, solicitado {cantidad}'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Decrement stock
+            producto.stock -= cantidad
+            producto.save()
+
+            # Check if detail already exists
+            detalle = DetallePedido.objects.filter(pedido=pedido, producto=producto).first()
+            if detalle:
+                detalle.cantidad += cantidad
+                detalle.subtotal = detalle.cantidad * detalle.precio_unitario
+                if observaciones:
+                    detalle.observaciones = (detalle.observaciones or '') + '\n' + observaciones
+                detalle.save()
+            else:
+                detalle = DetallePedido.objects.create(
+                    pedido=pedido,
+                    producto=producto,
+                    cantidad=cantidad,
+                    precio_unitario=producto.precio,
+                    subtotal=producto.precio * cantidad,
+                    observaciones=observaciones
+                )
+
+            # Update order total
+            pedido.total = sum(d.subtotal for d in pedido.detalles.all())
+            pedido.save()
+
+            serializer = PedidoSerializer(pedido, context={'request': request})
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class ActualizarEliminarDetallePedidoView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsEmpleadoOrAdmin]
+
+    def patch(self, request, pedido_id, detalle_id):
+        pedido = get_object_or_404(Pedido, id=pedido_id)
+        if pedido.estado not in ['pendiente', 'confirmado']:
+            return Response({'error': f'No se pueden modificar productos en un pedido en estado {pedido.estado}'}, status=status.HTTP_400_BAD_REQUEST)
+
+        detalle = get_object_or_404(DetallePedido, id=detalle_id, pedido=pedido)
+        nueva_cantidad = request.data.get('cantidad')
+        observaciones = request.data.get('observaciones')
+
+        with transaction.atomic():
+            pedido = Pedido.objects.select_for_update().get(id=pedido_id)
+            detalle = DetallePedido.objects.select_for_update().get(id=detalle_id)
+            producto = Producto.objects.select_for_update().get(id=detalle.producto.id)
+
+            if nueva_cantidad is not None:
+                nueva_cantidad = int(nueva_cantidad)
+                if nueva_cantidad <= 0:
+                    return Response({'error': 'La cantidad debe ser mayor a 0. Use DELETE para remover el producto.'}, status=status.HTTP_400_BAD_REQUEST)
+
+                diferencia = nueva_cantidad - detalle.cantidad
+                if diferencia > 0:
+                    if producto.stock < diferencia:
+                        return Response({
+                            'error': f'Stock insuficiente para "{producto.nombre}": disponible {producto.stock}, solicitado incremento de {diferencia}'
+                        }, status=status.HTTP_400_BAD_REQUEST)
+                    producto.stock -= diferencia
+                elif diferencia < 0:
+                    producto.stock += abs(diferencia)
+
+                producto.save()
+                detalle.cantidad = nueva_cantidad
+                detalle.subtotal = nueva_cantidad * detalle.precio_unitario
+
+            if observaciones is not None:
+                detalle.observaciones = observaciones
+
+            detalle.save()
+
+            # Update order total
+            pedido.total = sum(d.subtotal for d in pedido.detalles.all())
+            pedido.save()
+
+            serializer = PedidoSerializer(pedido, context={'request': request})
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def delete(self, request, pedido_id, detalle_id):
+        pedido = get_object_or_404(Pedido, id=pedido_id)
+        if pedido.estado not in ['pendiente', 'confirmado']:
+            return Response({'error': f'No se pueden eliminar productos de un pedido en estado {pedido.estado}'}, status=status.HTTP_400_BAD_REQUEST)
+
+        detalle = get_object_or_404(DetallePedido, id=detalle_id, pedido=pedido)
+
+        with transaction.atomic():
+            pedido = Pedido.objects.select_for_update().get(id=pedido_id)
+            detalle = DetallePedido.objects.select_for_update().get(id=detalle_id)
+            producto = Producto.objects.select_for_update().get(id=detalle.producto.id)
+
+            # Restore stock
+            producto.stock += detalle.cantidad
+            producto.save()
+
+            # Delete detail
+            detalle.delete()
+
+            # Update order total
+            pedido.total = sum(d.subtotal for d in pedido.detalles.all())
+            pedido.save()
+
+            serializer = PedidoSerializer(pedido, context={'request': request})
+            return Response(serializer.data, status=status.HTTP_200_OK)

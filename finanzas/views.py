@@ -556,7 +556,17 @@ class ConfirmarPagoStripeView(APIView):
                             pedido = pago.pedido
                             pedido.estado = 'confirmado'
                             pedido.save()
-                            pedido.mesa.estado = 'ocupada'
+                            
+                            # Liberar mesa si no quedan deudas
+                            restantes = Pedido.objects.filter(
+                                mesa=pedido.mesa,
+                                estado__in=['pendiente', 'confirmado', 'en_preparacion', 'lista']
+                            ).exclude(id=pedido.id).exclude(pagos__estado='exitoso').exists()
+                            
+                            if not restantes:
+                                pedido.mesa.estado = 'disponible'
+                            else:
+                                pedido.mesa.estado = 'ocupada'
                             pedido.mesa.save()
 
                             Bitacora.objects.create(
@@ -595,7 +605,17 @@ class ConfirmarPagoQRView(APIView):
                         pedido = pago.pedido
                         pedido.estado = 'confirmado'
                         pedido.save()
-                        pedido.mesa.estado = 'ocupada'
+                        
+                        # Liberar mesa si no quedan deudas
+                        restantes = Pedido.objects.filter(
+                            mesa=pedido.mesa,
+                            estado__in=['pendiente', 'confirmado', 'en_preparacion', 'lista']
+                        ).exclude(id=pedido.id).exclude(pagos__estado='exitoso').exists()
+                        
+                        if not restantes:
+                            pedido.mesa.estado = 'disponible'
+                        else:
+                            pedido.mesa.estado = 'ocupada'
                         pedido.mesa.save()
 
                         Bitacora.objects.create(
