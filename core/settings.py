@@ -32,6 +32,7 @@ INSTALLED_APPS = [
     'reservas',
     'producto',
     'pedidos',  
+    'finanzas',
     'corsheaders',
 ]
 
