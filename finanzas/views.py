@@ -30,6 +30,73 @@ class IsEmpleadoAtencionOrAdmin(BasePermission):
             request.user.cod_rol.cod_rol in ['admin', 'mesero', 'cocinero', 'emp']
         )
 
+def _nombre_usuario(usuario):
+    return getattr(usuario, 'nombre', None) or 'No registrado'
+
+def _formatear_fecha_hora(dt):
+    return timezone.localtime(dt).strftime('%d/%m/%Y %H:%M') if dt else timezone.localtime().strftime('%d/%m/%Y %H:%M')
+
+def _producto_nota(cantidad, nombre, precio, total):
+    return {
+        'cantidad': cantidad,
+        'producto': nombre,
+        'precio': f'{float(precio):.2f}',
+        'total': f'{float(total):.2f}',
+    }
+
+def construir_nota_venta(pago):
+    pedido = pago.pedido
+    reserva = pago.reserva
+    preorden = pago.preorden
+
+    productos = []
+    mesa = None
+    sala = None
+    cliente = None
+    mesero = _nombre_usuario(pago.usuario)
+
+    if pedido:
+        mesa = pedido.mesa.nombre if pedido.mesa else None
+        sala = pedido.sala.nombre if pedido.sala else (pedido.mesa.sala.nombre if pedido.mesa else None)
+        mesero = _nombre_usuario(pago.usuario or pedido.usuario)
+        for det in pedido.detalles.filter(confirmado=True):
+            productos.append(_producto_nota(det.cantidad, det.producto.nombre, det.precio_unitario, det.subtotal))
+    elif preorden:
+        mesa = preorden.mesa.nombre if preorden.mesa else None
+        sala = preorden.sala.nombre if preorden.sala else (preorden.reserva.sala.nombre if preorden.reserva else None)
+        cliente_preorden = preorden.cliente or (preorden.reserva.cliente if preorden.reserva else None)
+        cliente = _nombre_usuario(cliente_preorden.id_usuario) if cliente_preorden else None
+        mesero = _nombre_usuario(preorden.usuario_mesero) if preorden.usuario_mesero else 'Reserva en línea'
+        for det in preorden.detalles.all():
+            productos.append(_producto_nota(det.cantidad, det.producto.nombre, det.precio_unitario, det.subtotal))
+    elif reserva:
+        mesa = reserva.mesa.nombre if reserva.mesa else None
+        sala = reserva.sala.nombre if reserva.sala else None
+        cliente = _nombre_usuario(reserva.cliente.id_usuario) if reserva.cliente else None
+        mesero = 'Reserva en línea'
+
+    subtotal = sum(float(item['total']) for item in productos) if productos else float(pago.monto)
+    total = float(pago.monto) if pago.monto is not None else subtotal
+
+    return {
+        'numeroComprobante': f'NV-{pago.id:06d}',
+        'fechaHora': _formatear_fecha_hora(pago.updated_at or pago.created_at),
+        'cliente': cliente,
+        'mesero': mesero,
+        'mesa': mesa or 'Sin mesa',
+        'sala': sala or 'Sin sala',
+        'productos': productos,
+        'subtotal': f'{subtotal:.2f}',
+        'total': f'{total:.2f}',
+        'metodoPago': pago.get_metodo_pago_display().upper(),
+    }
+
+def obtener_url_retorno_cliente(request, path, env_name, default_base):
+    frontend_origin = request.data.get('frontend_origin') or request.META.get('HTTP_ORIGIN')
+    if frontend_origin and frontend_origin.startswith(('http://', 'https://')):
+        return f"{frontend_origin.rstrip('/')}{path}"
+    return os.getenv(env_name, f"{default_base}{path}")
+
 class CrearSesionReservaView(APIView):
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticatedJWT]
@@ -172,8 +239,18 @@ class CrearSesionReservaView(APIView):
                     estado='pendiente'
                 )
 
-                success_url = os.getenv('STRIPE_SUCCESS_URL', 'http://localhost:5173/cliente/mis-reservas')
-                cancel_url = os.getenv('STRIPE_CANCEL_URL', 'http://localhost:5173/cliente/salas')
+                success_url = obtener_url_retorno_cliente(
+                    request,
+                    '/cliente/mis-reservas',
+                    'STRIPE_SUCCESS_URL',
+                    'http://localhost:5173'
+                )
+                cancel_url = obtener_url_retorno_cliente(
+                    request,
+                    '/cliente/salas',
+                    'STRIPE_CANCEL_URL',
+                    'http://localhost:5173'
+                )
                 
                 success_url += "?pago_success=true&session_id={CHECKOUT_SESSION_ID}"
                 cancel_url += f"?pago_cancel=true&reserva_id={reserva.id}"
@@ -532,6 +609,7 @@ class ConfirmarPagoStripeView(APIView):
                     if pago.estado != 'exitoso':
                         pago.estado = 'exitoso'
                         pago.stripe_payment_intent = session.payment_intent
+                        pago.usuario = request.user
                         pago.save()
 
                         if pago.reserva:
@@ -558,12 +636,10 @@ class ConfirmarPagoStripeView(APIView):
                             pedido.save()
                             
                             # Liberar mesa si no quedan deudas
-                            restantes = Pedido.objects.filter(
-                                mesa=pedido.mesa,
-                                estado__in=['pendiente', 'confirmado', 'en_preparacion', 'lista']
-                            ).exclude(id=pedido.id).exclude(pagos__estado='exitoso').exists()
+                            from pedidos.services import mesa_tiene_deudas_activas
+                            tiene_deudas = mesa_tiene_deudas_activas(pedido.mesa, exclude_pedido_id=pedido.id)
                             
-                            if not restantes:
+                            if not tiene_deudas:
                                 pedido.mesa.estado = 'disponible'
                             else:
                                 pedido.mesa.estado = 'ocupada'
@@ -575,9 +651,17 @@ class ConfirmarPagoStripeView(APIView):
                                 detalles=f'Pago ID {pago.id} exitoso. Pedido ID {pedido.id} confirmado.'
                             )
 
-                        return Response({'mensaje': 'Pago confirmado correctamente', 'estado': 'exitoso'})
+                        return Response({
+                            'mensaje': 'Pago confirmado correctamente',
+                            'estado': 'exitoso',
+                            'nota_venta': construir_nota_venta(pago),
+                        })
                     else:
-                        return Response({'mensaje': 'El pago ya había sido procesado', 'estado': 'exitoso'})
+                        return Response({
+                            'mensaje': 'El pago ya había sido procesado',
+                            'estado': 'exitoso',
+                            'nota_venta': construir_nota_venta(pago),
+                        })
             else:
                 return Response({'error': 'La sesión de Stripe no está pagada'}, status=status.HTTP_400_BAD_REQUEST)
         except Pago.DoesNotExist:
@@ -599,6 +683,7 @@ class ConfirmarPagoQRView(APIView):
                 pago = Pago.objects.select_for_update().get(id=pago_id)
                 if pago.estado != 'exitoso':
                     pago.estado = 'exitoso'
+                    pago.usuario = request.user
                     pago.save()
 
                     if pago.pedido:
@@ -607,12 +692,10 @@ class ConfirmarPagoQRView(APIView):
                         pedido.save()
                         
                         # Liberar mesa si no quedan deudas
-                        restantes = Pedido.objects.filter(
-                            mesa=pedido.mesa,
-                            estado__in=['pendiente', 'confirmado', 'en_preparacion', 'lista']
-                        ).exclude(id=pedido.id).exclude(pagos__estado='exitoso').exists()
+                        from pedidos.services import mesa_tiene_deudas_activas
+                        tiene_deudas = mesa_tiene_deudas_activas(pedido.mesa, exclude_pedido_id=pedido.id)
                         
-                        if not restantes:
+                        if not tiene_deudas:
                             pedido.mesa.estado = 'disponible'
                         else:
                             pedido.mesa.estado = 'ocupada'
@@ -624,13 +707,42 @@ class ConfirmarPagoQRView(APIView):
                             detalles=f'Pago ID {pago.id} exitoso para Pedido ID {pedido.id}.'
                         )
 
-                    return Response({'mensaje': 'Pago por QR confirmado correctamente', 'estado': 'exitoso'})
+                    return Response({
+                        'mensaje': 'Pago por QR confirmado correctamente',
+                        'estado': 'exitoso',
+                        'nota_venta': construir_nota_venta(pago),
+                    })
                 else:
-                    return Response({'mensaje': 'El pago ya había sido procesado', 'estado': 'exitoso'})
+                    return Response({
+                        'mensaje': 'El pago ya había sido procesado',
+                        'estado': 'exitoso',
+                        'nota_venta': construir_nota_venta(pago),
+                    })
         except Pago.DoesNotExist:
             return Response({'error': 'Pago no encontrado'}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
             return Response({'error': f'Error al confirmar QR: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class NotaVentaPedidoView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsEmpleadoAtencionOrAdmin]
+
+    def post(self, request):
+        pedido_id = request.data.get('pedido_id')
+        metodo_pago = request.data.get('metodo_pago')
+
+        if not pedido_id:
+            return Response({'error': 'pedido_id es requerido'}, status=status.HTTP_400_BAD_REQUEST)
+
+        pagos = Pago.objects.filter(pedido_id=pedido_id, estado='exitoso').order_by('-updated_at', '-id')
+        if metodo_pago:
+            pagos = pagos.filter(metodo_pago=str(metodo_pago).lower())
+
+        pago = pagos.first()
+        if not pago:
+            return Response({'error': 'No existe un pago confirmado para este pedido'}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response({'nota_venta': construir_nota_venta(pago)}, status=status.HTTP_200_OK)
 
 class CancelarPagoPedidoView(APIView):
     authentication_classes = [JWTAuthentication]
