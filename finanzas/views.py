@@ -558,12 +558,10 @@ class ConfirmarPagoStripeView(APIView):
                             pedido.save()
                             
                             # Liberar mesa si no quedan deudas
-                            restantes = Pedido.objects.filter(
-                                mesa=pedido.mesa,
-                                estado__in=['pendiente', 'confirmado', 'en_preparacion', 'lista']
-                            ).exclude(id=pedido.id).exclude(pagos__estado='exitoso').exists()
+                            from pedidos.services import mesa_tiene_deudas_activas
+                            tiene_deudas = mesa_tiene_deudas_activas(pedido.mesa, exclude_pedido_id=pedido.id)
                             
-                            if not restantes:
+                            if not tiene_deudas:
                                 pedido.mesa.estado = 'disponible'
                             else:
                                 pedido.mesa.estado = 'ocupada'
@@ -607,12 +605,10 @@ class ConfirmarPagoQRView(APIView):
                         pedido.save()
                         
                         # Liberar mesa si no quedan deudas
-                        restantes = Pedido.objects.filter(
-                            mesa=pedido.mesa,
-                            estado__in=['pendiente', 'confirmado', 'en_preparacion', 'lista']
-                        ).exclude(id=pedido.id).exclude(pagos__estado='exitoso').exists()
+                        from pedidos.services import mesa_tiene_deudas_activas
+                        tiene_deudas = mesa_tiene_deudas_activas(pedido.mesa, exclude_pedido_id=pedido.id)
                         
-                        if not restantes:
+                        if not tiene_deudas:
                             pedido.mesa.estado = 'disponible'
                         else:
                             pedido.mesa.estado = 'ocupada'

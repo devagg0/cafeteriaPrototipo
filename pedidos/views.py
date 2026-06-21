@@ -153,6 +153,13 @@ class PedidoViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        from pedidos.services import obtener_pedido_activo
+        if obtener_pedido_activo(mesa):
+            return Response(
+                {'error': 'La mesa ya tiene un pedido activo.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         try:
             with transaction.atomic():
                 total = 0
@@ -650,12 +657,9 @@ class PedidoActivoMesaView(APIView):
     permission_classes = [IsEmpleadoOrAdmin]
 
     def get(self, request, mesa_id):
-        pedido = Pedido.objects.filter(
-            mesa_id=mesa_id,
-            estado__in=['pendiente', 'confirmado', 'en_preparacion', 'lista']
-        ).exclude(
-            pagos__estado='exitoso'
-        ).first()
+        from pedidos.services import obtener_pedido_activo
+        mesa = get_object_or_404(Mesa, id=mesa_id)
+        pedido = obtener_pedido_activo(mesa)
 
         if not pedido:
             return Response({'error': 'No hay pedido activo para esta mesa'}, status=status.HTTP_404_NOT_FOUND)
@@ -671,15 +675,12 @@ class IniciarPedidoMesaView(APIView):
     def post(self, request, mesa_id):
         mesa = get_object_or_404(Mesa, id=mesa_id)
         with transaction.atomic():
-            # Check if there is an active order
-            pedido = Pedido.objects.select_for_update().filter(
-                mesa=mesa,
-                estado__in=['pendiente', 'confirmado', 'en_preparacion', 'lista']
-            ).exclude(
-                pagos__estado='exitoso'
-            ).first()
+            from pedidos.services import obtener_pedido_activo
+            pedido = obtener_pedido_activo(mesa)
 
-            if not pedido:
+            if pedido:
+                pedido = Pedido.objects.select_for_update().get(id=pedido.id)
+            else:
                 # If the mesa is disponible, transition it to occupied
                 if mesa.estado == 'disponible':
                     reserva_futura = Reserva.objects.filter(
@@ -838,3 +839,164 @@ class ActualizarEliminarDetallePedidoView(APIView):
 
             serializer = PedidoSerializer(pedido, context={'request': request})
             return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class ConfirmarPedidoView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsEmpleadoOrAdmin]
+
+    def post(self, request, id):
+        from django.db.models import Sum
+        pedido = get_object_or_404(Pedido, id=id)
+        if pedido.estado not in ['pendiente', 'confirmado']:
+            return Response({'error': f'No se puede confirmar un pedido en estado {pedido.estado}'}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            pedido = Pedido.objects.select_for_update().get(id=id)
+            detalles_pendientes = pedido.detalles.filter(confirmado=False)
+            
+            from finanzas.models import Pago
+            if not detalles_pendientes.exists():
+                serializer = PedidoSerializer(pedido, context={'request': request})
+                return Response(serializer.data, status=status.HTTP_200_OK)
+
+            # Update unconfirmed details to confirmed
+            now = timezone.now()
+            for det in detalles_pendientes:
+                det.confirmado = True
+                det.fecha_confirmacion = now
+                det.usuario_confirmacion = request.user
+                det.save()
+
+            if pedido.estado == 'pendiente':
+                pedido.estado = 'confirmado'
+                pedido.save()
+
+            if pedido.mesa:
+                pedido.mesa.estado = 'ocupada'
+                pedido.mesa.save()
+
+            Bitacora.objects.create(
+                usuario=request.user,
+                accion='confirmar pedido',
+                detalles=f'Pedido ID {pedido.id} confirmado por mesero.'
+            )
+
+            serializer = PedidoSerializer(pedido, context={'request': request})
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class ResumenPagoView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsEmpleadoOrAdmin]
+
+    def get(self, request, id):
+        from django.db.models import Sum
+        from finanzas.models import Pago
+        pedido = get_object_or_404(Pedido, id=id)
+        
+        # Calculate totals
+        total = pedido.total
+        total_confirmado = sum(d.subtotal for d in pedido.detalles.filter(confirmado=True))
+        total_pagado = Pago.objects.filter(pedido=pedido, estado='exitoso').aggregate(Sum('monto'))['monto__sum'] or 0.00
+        total_pendiente = max(0.00, float(total_confirmado) - float(total_pagado))
+
+        productos_confirmados = DetallePedidoSerializer(pedido.detalles.filter(confirmado=True), many=True).data
+        productos_pendientes = DetallePedidoSerializer(pedido.detalles.filter(confirmado=False), many=True).data
+        
+        has_pending = pedido.detalles.filter(confirmado=False).exists()
+        
+        puede_pagar = True
+        motivo_bloqueo_pago = None
+        
+        if len(pedido.detalles.all()) == 0:
+            puede_pagar = False
+            motivo_bloqueo_pago = "El pedido está vacío"
+        elif has_pending:
+            puede_pagar = False
+            motivo_bloqueo_pago = "Confirma los productos pendientes antes de realizar el pago"
+        elif total_pendiente <= 0:
+            puede_pagar = False
+            motivo_bloqueo_pago = "El pedido ya está totalmente pagado"
+
+        return Response({
+            "pedido_id": pedido.id,
+            "mesa": pedido.mesa.nombre if pedido.mesa else None,
+            "sala": pedido.sala.nombre if pedido.sala else (pedido.mesa.sala.nombre if pedido.mesa else None),
+            "estado_pedido": pedido.estado,
+            "estado_pago": "PAGADO" if total_pendiente <= 0 and not has_pending and len(pedido.detalles.all()) > 0 else "PENDIENTE",
+            "total": f"{total:.2f}",
+            "total_pagado": f"{total_pagado:.2f}",
+            "total_pendiente": f"{total_pendiente:.2f}",
+            "productos_confirmados": productos_confirmados,
+            "productos_pendientes": productos_pendientes,
+            "puede_pagar": puede_pagar,
+            "motivo_bloqueo_pago": motivo_bloqueo_pago,
+            "metodos_pago": ["STRIPE", "QR", "EFECTIVO"]
+        })
+
+
+class PagarEfectivoView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsEmpleadoOrAdmin]
+
+    def post(self, request, id):
+        from django.db.models import Sum
+        from finanzas.models import Pago
+        pedido = get_object_or_404(Pedido, id=id)
+        if len(pedido.detalles.all()) == 0:
+            return Response({'error': 'El pedido está vacío'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        has_pending = pedido.detalles.filter(confirmado=False).exists()
+        if has_pending:
+            return Response({'error': 'Confirma los productos pendientes antes de realizar el pago'}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            pedido = Pedido.objects.select_for_update().get(id=id)
+            
+            # Recalculate total_pendiente to prevent race conditions
+            total_confirmado = sum(d.subtotal for d in pedido.detalles.filter(confirmado=True))
+            total_pagado = Pago.objects.filter(pedido=pedido, estado='exitoso').aggregate(Sum('monto'))['monto__sum'] or 0.00
+            total_pendiente = max(0.00, float(total_confirmado) - float(total_pagado))
+
+            if total_pendiente <= 0:
+                return Response({'error': 'El pedido ya está totalmente pagado'}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Create Pago
+            pago = Pago.objects.create(
+                pedido=pedido,
+                monto=total_pendiente,
+                metodo_pago='efectivo',
+                estado='exitoso',
+                usuario=request.user
+            )
+
+            # Update pedido state
+            pedido.estado = 'confirmado'
+            pedido.save()
+
+            # Automatically liberate the table if no other unpaid orders remain
+            from pedidos.services import mesa_tiene_deudas_activas
+            tiene_deudas = mesa_tiene_deudas_activas(pedido.mesa, exclude_pedido_id=pedido.id)
+
+            estado_mesa = "OCUPADA"
+            if not tiene_deudas:
+                if pedido.mesa:
+                    pedido.mesa.estado = 'disponible'
+                    pedido.mesa.save()
+                    estado_mesa = "LIBRE"
+
+            Bitacora.objects.create(
+                usuario=request.user,
+                accion='registrar pago efectivo',
+                detalles=f'Pago en efectivo de Bs. {total_pendiente:.2f} registrado para pedido ID {pedido.id}.'
+            )
+
+            return Response({
+                "message": "Pago en efectivo registrado correctamente",
+                "metodo_pago": "EFECTIVO",
+                "monto_pagado": f"{total_pendiente:.2f}",
+                "total_pendiente": "0.00",
+                "estado_pago": "PAGADO",
+                "estado_mesa": estado_mesa
+            }, status=status.HTTP_200_OK)
