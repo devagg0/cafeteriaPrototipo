@@ -18,10 +18,62 @@ class SalaTematicaSerializer(serializers.ModelSerializer):
 
 class MesaSerializer(serializers.ModelSerializer):
     sala_nombre = serializers.ReadOnlyField(source='sala.nombre')
+    cantidad_productos = serializers.SerializerMethodField()
+    total_pendiente = serializers.SerializerMethodField()
 
     class Meta:
         model = Mesa
         fields = '__all__'
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        
+        # If the mesa status is 'reservada', keep it
+        if instance.estado == 'reservada':
+            data['estado'] = 'reservada'
+            return data
+
+        from pedidos.services import obtener_pedido_activo
+        pedido = obtener_pedido_activo(instance)
+        
+        if pedido:
+            total_confirmado = sum(d.subtotal for d in pedido.detalles.filter(confirmado=True))
+            from django.db.models import Sum
+            from finanzas.models import Pago
+            total_pagado = Pago.objects.filter(pedido=pedido, estado='exitoso').aggregate(Sum('monto'))['monto__sum'] or 0.00
+            total_pendiente = max(0.00, float(total_confirmado) - float(total_pagado))
+            
+            tiene_pendientes = pedido.detalles.filter(confirmado=False).exists()
+            tiene_detalles = pedido.detalles.exists()
+            
+            if tiene_detalles and (tiene_pendientes or total_pendiente > 0.00):
+                data['estado'] = 'ocupada'
+            else:
+                data['estado'] = 'disponible'
+        else:
+            data['estado'] = 'disponible'
+            
+        return data
+
+    def get_cantidad_productos(self, obj):
+        from pedidos.services import obtener_pedido_activo
+        from django.db.models import Sum
+        pedido = obtener_pedido_activo(obj)
+        if pedido:
+            return pedido.detalles.aggregate(total_qty=Sum('cantidad'))['total_qty'] or 0
+        return 0
+
+    def get_total_pendiente(self, obj):
+        from pedidos.services import obtener_pedido_activo
+        from finanzas.models import Pago
+        from django.db.models import Sum
+        pedido = obtener_pedido_activo(obj)
+        if pedido:
+            total_confirmado = sum(d.subtotal for d in pedido.detalles.filter(confirmado=True))
+            total_pagado = Pago.objects.filter(pedido=pedido, estado='exitoso').aggregate(Sum('monto'))['monto__sum'] or 0.00
+            total_pendiente = max(0.00, float(total_confirmado) - float(total_pagado))
+            return float(total_pendiente)
+        return 0.0
 
     def validate(self, data):
         capacidad = data.get('capacidad')

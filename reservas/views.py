@@ -2,6 +2,8 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.views import APIView
+from django.db import transaction
 from .models import SalaTematica, Mesa, Reserva, SalaImagen
 from .serializers import SalaTematicaSerializer, MesaSerializer, ReservaSerializer, SalaImagenSerializer
 from usuarios.models import Usuario, Cliente, Bitacora
@@ -604,3 +606,79 @@ class ReservaViewSet(viewsets.ModelViewSet):
         reserva.save(update_fields=['estado'])
         actualizar_estado_mesa(reserva.mesa)
         return Response({'mensaje': 'Reserva finalizada y mesa liberada'})
+
+
+class MesaEstadoView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsEmpleadoOrAdmin]
+
+    def patch(self, request, pk):
+        from django.db.models import Q
+        from pedidos.models import Pedido
+        from finanzas.models import Pago
+
+        try:
+            mesa = Mesa.objects.get(id=pk)
+        except Mesa.DoesNotExist:
+            return Response({'error': 'La mesa no existe'}, status=status.HTTP_404_NOT_FOUND)
+
+        nuevo_estado = request.data.get('estado')
+        if nuevo_estado not in ['disponible', 'ocupada', 'reservada', 'atendida']:
+            return Response({'error': f'Estado {nuevo_estado} no es válido'}, status=status.HTTP_400_BAD_REQUEST)
+
+        estado_anterior = mesa.estado
+        if estado_anterior == nuevo_estado:
+            return Response({
+                'id': mesa.id,
+                'nombre': mesa.nombre,
+                'estado': mesa.estado,
+                'estado_display': mesa.get_estado_display()
+            }, status=status.HTTP_200_OK)
+
+        # Validación de transiciones
+        if nuevo_estado == 'ocupada':
+            # disponible -> ocupada: cuando el mesero inicia la atención
+            # reservada -> ocupada: si tiene check-in en curso
+            if estado_anterior in ['disponible', 'reservada']:
+                # Bloquear ocupación libre si tiene reserva activa futura hoy
+                reserva_futura = Reserva.objects.filter(
+                    mesa=mesa,
+                    fecha=timezone.localdate(),
+                    estado__in=['pendiente', 'confirmada']
+                ).exists()
+                if reserva_futura and estado_anterior == 'disponible':
+                    return Response({'error': 'La mesa tiene una reserva activa para hoy y no puede ocuparse libremente'}, status=status.HTTP_400_BAD_REQUEST)
+            else:
+                return Response({'error': f'No se puede pasar de {estado_anterior} a ocupada'}, status=status.HTTP_400_BAD_REQUEST)
+
+        elif nuevo_estado == 'disponible':
+            # ocupada -> disponible: únicamente cuando no queden deudas ni pedidos activos
+            if estado_anterior == 'ocupada':
+                unpaid_pedidos = Pedido.objects.filter(
+                    mesa=mesa,
+                    estado__in=['pendiente', 'confirmado', 'en_preparacion', 'lista']
+                ).exclude(
+                    pagos__estado='exitoso'
+                ).exists()
+
+                pending_payments = Pago.objects.filter(
+                    estado='pendiente'
+                ).filter(
+                    Q(pedido__mesa=mesa) | Q(reserva__mesa=mesa) | Q(preorden__mesa=mesa)
+                ).exists()
+
+                if unpaid_pedidos or pending_payments:
+                    return Response({'error': 'No se puede liberar la mesa: existen pedidos activos o pagos pendientes'}, status=status.HTTP_400_BAD_REQUEST)
+            else:
+                return Response({'error': f'No se puede liberar la mesa desde el estado {estado_anterior}'}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            mesa.estado = nuevo_estado
+            mesa.save()
+
+        return Response({
+            'id': mesa.id,
+            'nombre': mesa.nombre,
+            'estado': mesa.estado,
+            'estado_display': mesa.get_estado_display()
+        }, status=status.HTTP_200_OK)

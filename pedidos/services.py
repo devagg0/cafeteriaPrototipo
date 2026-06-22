@@ -118,3 +118,62 @@ def convertir_preorden_a_pedido_por_checkin(reserva, usuario):
         'preorden_procesada': True,
         'pedido_id': pedido.id,
     }
+
+
+def obtener_pedido_activo(mesa):
+    from django.db.models import Sum
+    from finanzas.models import Pago
+    
+    # We query orders associated with the mesa in active states:
+    # 'pendiente', 'confirmado', 'en_preparacion', 'lista'
+    # Ordered by -created_at so we always get the most recent one.
+    active_orders = Pedido.objects.filter(
+        mesa=mesa,
+        estado__in=['pendiente', 'confirmado', 'en_preparacion', 'lista']
+    ).order_by('-created_at')
+    
+    for pedido in active_orders:
+        # Calculate total confirmed
+        total_confirmado = sum(d.subtotal for d in pedido.detalles.filter(confirmado=True))
+        # Calculate total paid
+        total_pagado = Pago.objects.filter(pedido=pedido, estado='exitoso').aggregate(Sum('monto'))['monto__sum'] or 0.00
+        total_pendiente = float(total_confirmado) - float(total_pagado)
+        
+        tiene_pendientes = pedido.detalles.filter(confirmado=False).exists()
+        tiene_detalles = pedido.detalles.exists()
+        
+        # A pedido is active if:
+        # 1. It has no details (new/empty order created by a mesero)
+        # 2. Or it has unconfirmed products (pending confirmation)
+        # 3. Or it has a pending balance (debt) > 0.00
+        if not tiene_detalles or tiene_pendientes or total_pendiente > 0.00:
+            return pedido
+            
+    return None
+
+
+def mesa_tiene_deudas_activas(mesa, exclude_pedido_id=None):
+    from django.db.models import Sum
+    from finanzas.models import Pago
+    
+    active_orders = Pedido.objects.filter(
+        mesa=mesa,
+        estado__in=['pendiente', 'confirmado', 'en_preparacion', 'lista']
+    )
+    if exclude_pedido_id:
+        active_orders = active_orders.exclude(id=exclude_pedido_id)
+        
+    for pedido in active_orders:
+        total_confirmado = sum(d.subtotal for d in pedido.detalles.filter(confirmado=True))
+        total_pagado = Pago.objects.filter(pedido=pedido, estado='exitoso').aggregate(Sum('monto'))['monto__sum'] or 0.00
+        total_pendiente = float(total_confirmado) - float(total_pagado)
+        
+        tiene_pendientes = pedido.detalles.filter(confirmado=False).exists()
+        tiene_detalles = pedido.detalles.exists()
+        
+        # A table has debt/is active if it has unconfirmed details OR pending balance > 0
+        if tiene_detalles and (tiene_pendientes or total_pendiente > 0.00):
+            return True
+            
+    return False
+

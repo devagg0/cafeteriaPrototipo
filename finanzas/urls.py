@@ -1,0 +1,30 @@
+from django.urls import path
+from .views import (
+    CrearSesionReservaView,
+    IniciarPagoPedidoView,
+    ConfirmarPagoStripeView,
+    ConfirmarPagoQRView,
+    NotaVentaPedidoView,
+    CierreCajaView,
+    CerrarCajaView,
+    CancelarPagoPedidoView,
+    CancelarPagoReservaView,
+    ReporteEstaticoView,
+    ReporteDinamicoView,
+    ReporteVozView,
+)
+
+urlpatterns = [
+    path('finanzas/crear-sesion-reserva/', CrearSesionReservaView.as_view(), name='crear-sesion-reserva'),
+    path('finanzas/iniciar-pago-pedido/', IniciarPagoPedidoView.as_view(), name='iniciar-pago-pedido'),
+    path('finanzas/confirmar-pago-stripe/', ConfirmarPagoStripeView.as_view(), name='confirmar-pago-stripe'),
+    path('finanzas/confirmar-pago-qr/', ConfirmarPagoQRView.as_view(), name='confirmar-pago-qr'),
+    path('finanzas/nota-venta-pedido/', NotaVentaPedidoView.as_view(), name='nota-venta-pedido'),
+    path('finanzas/cierre-caja/', CierreCajaView.as_view(), name='cierre-caja'),
+    path('finanzas/cierre-caja/cerrar/', CerrarCajaView.as_view(), name='cerrar-caja'),
+    path('finanzas/cancelar-pago-pedido/', CancelarPagoPedidoView.as_view(), name='cancelar-pago-pedido'),
+    path('finanzas/cancelar-pago-reserva/', CancelarPagoReservaView.as_view(), name='cancelar-pago-reserva'),
+    path('finanzas/reportes/estatico/', ReporteEstaticoView.as_view(), name='reporte-estatico'),
+    path('finanzas/reportes/dinamico/', ReporteDinamicoView.as_view(), name='reporte-dinamico'),
+    path('finanzas/reportes/voz/', ReporteVozView.as_view(), name='reporte-voz'),
+]

@@ -2,12 +2,12 @@ from pathlib import Path
 import os
 from dotenv import load_dotenv
 
+BASE_DIR = Path(__file__).resolve().parent.parent
+
 # ========================
 # CARGAR VARIABLES DE ENTORNO
 # ========================
-load_dotenv()
-
-BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / '.env')
 
 SECRET_KEY = os.getenv('SECRET_KEY') or 'django-insecure--trf-zj-a9q@i$h#+wbj5&(z6dcz+u0t&0y6qa5!de+vy!a%my'
 
@@ -32,6 +32,7 @@ INSTALLED_APPS = [
     'reservas',
     'producto',
     'pedidos',  
+    'finanzas',
     'corsheaders',
 ]
 

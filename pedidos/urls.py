@@ -8,6 +8,13 @@ from .views import (
     CocinaComandaDetailView,
     CocinaComandaEnPreparacionView,
     CocinaComandaListaView,
+    PedidoActivoMesaView,
+    IniciarPedidoMesaView,
+    AgregarDetallePedidoView,
+    ActualizarEliminarDetallePedidoView,
+    ConfirmarPedidoView,
+    ResumenPagoView,
+    PagarEfectivoView,
 )
 
 router = DefaultRouter()
@@ -21,5 +28,15 @@ urlpatterns = [
     path('cocina/comandas/<int:id>/', CocinaComandaDetailView.as_view(), name='cocina-comanda-detail'),
     path('cocina/comandas/<int:id>/en-preparacion/', CocinaComandaEnPreparacionView.as_view(), name='cocina-comanda-en-preparacion'),
     path('cocina/comandas/<int:id>/lista/', CocinaComandaListaView.as_view(), name='cocina-comanda-lista'),
+    
+    path('pedidos/mesa/<int:mesa_id>/activo/', PedidoActivoMesaView.as_view(), name='pedido-activo-mesa'),
+    path('pedidos/mesa/<int:mesa_id>/iniciar/', IniciarPedidoMesaView.as_view(), name='iniciar-pedido-mesa'),
+    path('pedidos/<int:pedido_id>/detalles/', AgregarDetallePedidoView.as_view(), name='agregar-detalle-pedido'),
+    path('pedidos/<int:pedido_id>/detalles/<int:detalle_id>/', ActualizarEliminarDetallePedidoView.as_view(), name='actualizar-eliminar-detalle-pedido'),
+    
+    path('pedidos/<int:id>/confirmar/', ConfirmarPedidoView.as_view(), name='confirmar-pedido-detalle'),
+    path('pedidos/<int:id>/resumen-pago/', ResumenPagoView.as_view(), name='resumen-pago-pedido'),
+    path('pedidos/<int:id>/pagar-efectivo/', PagarEfectivoView.as_view(), name='pagar-efectivo-pedido'),
+    
     path('', include(router.urls)),
 ]

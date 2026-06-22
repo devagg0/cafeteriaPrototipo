@@ -23,9 +23,63 @@ class PedidoSerializer(serializers.ModelSerializer):
     reserva_id = serializers.PrimaryKeyRelatedField(source='reserva', read_only=True)
     sala_nombre = serializers.ReadOnlyField(source='sala.nombre')
     mesa_nombre = serializers.ReadOnlyField(source='mesa.nombre')
+    total = serializers.SerializerMethodField()
+    total_pendiente = serializers.SerializerMethodField()
+    total_pagado = serializers.SerializerMethodField()
+    cantidad_productos = serializers.SerializerMethodField()
+    cantidad_pendientes = serializers.SerializerMethodField()
+    cantidad_confirmados = serializers.SerializerMethodField()
+    estado_mesa = serializers.SerializerMethodField()
+
     class Meta:
         model = Pedido
         fields = '__all__'
+
+    def get_total(self, obj):
+        return float(sum(d.subtotal for d in obj.detalles.all()))
+
+    def get_total_pendiente(self, obj):
+        from django.db.models import Sum
+        from finanzas.models import Pago
+        total_confirmado = sum(d.subtotal for d in obj.detalles.filter(confirmado=True))
+        total_pagado = Pago.objects.filter(pedido=obj, estado='exitoso').aggregate(Sum('monto'))['monto__sum'] or 0.00
+        return float(max(0.00, float(total_confirmado) - float(total_pagado)))
+
+    def get_total_pagado(self, obj):
+        from django.db.models import Sum
+        from finanzas.models import Pago
+        total_pagado = Pago.objects.filter(pedido=obj, estado='exitoso').aggregate(Sum('monto'))['monto__sum'] or 0.00
+        return float(total_pagado)
+
+    def get_cantidad_productos(self, obj):
+        from django.db.models import Sum
+        return obj.detalles.aggregate(total_qty=Sum('cantidad'))['total_qty'] or 0
+
+    def get_cantidad_pendientes(self, obj):
+        from django.db.models import Sum
+        return obj.detalles.filter(confirmado=False).aggregate(total_qty=Sum('cantidad'))['total_qty'] or 0
+
+    def get_cantidad_confirmados(self, obj):
+        from django.db.models import Sum
+        return obj.detalles.filter(confirmado=True).aggregate(total_qty=Sum('cantidad'))['total_qty'] or 0
+
+    def get_estado_mesa(self, obj):
+        if obj.mesa:
+            if obj.mesa.estado == 'reservada':
+                return 'RESERVADA'
+            
+            tiene_pendientes = obj.detalles.filter(confirmado=False).exists()
+            total_confirmado = sum(d.subtotal for d in obj.detalles.filter(confirmado=True))
+            from django.db.models import Sum
+            from finanzas.models import Pago
+            total_pagado = Pago.objects.filter(pedido=obj, estado='exitoso').aggregate(Sum('monto'))['monto__sum'] or 0.00
+            total_pendiente = max(0.00, float(total_confirmado) - float(total_pagado))
+            
+            tiene_detalles = obj.detalles.exists()
+            
+            if tiene_detalles and (tiene_pendientes or total_pendiente > 0.00):
+                return 'OCUPADA'
+        return 'LIBRE'
 
 class CocinaDetallePedidoSerializer(serializers.ModelSerializer):
     producto_id = serializers.ReadOnlyField(source='producto.id')
