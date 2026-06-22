@@ -5,6 +5,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from ..models import DetallePedido, Pedido
+from ..promociones import recalcular_totales_pedido
 from ..views import IsAuthenticatedJWT, JWTAuthentication
 from .serializers import (
     HistorialPedidoDetailSerializer,
@@ -199,8 +200,7 @@ class PedidoEditarView(APIView):
                 producto.save()
                 total += subtotal
 
-            pedido.total = total
-            pedido.save()
+            recalcular_totales_pedido(pedido)
 
         try:
             Bitacora.objects.create(

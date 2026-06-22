@@ -1,6 +1,8 @@
 from rest_framework import serializers
+from decimal import Decimal
 from producto.models import Categoria, Producto
 from .models import Pedido, DetallePedido, Preorden, DetallePreorden
+from .promociones import total_confirmado_pendiente
 
 class DetallePedidoSerializer(serializers.ModelSerializer):
     producto_nombre    = serializers.ReadOnlyField(source='producto.nombre')
@@ -24,6 +26,9 @@ class PedidoSerializer(serializers.ModelSerializer):
     sala_nombre = serializers.ReadOnlyField(source='sala.nombre')
     mesa_nombre = serializers.ReadOnlyField(source='mesa.nombre')
     total = serializers.SerializerMethodField()
+    subtotal_original = serializers.SerializerMethodField()
+    promocion_codigo = serializers.ReadOnlyField(source='promocion.codigo')
+    promocion_nombre = serializers.ReadOnlyField(source='promocion.nombre')
     total_pendiente = serializers.SerializerMethodField()
     total_pagado = serializers.SerializerMethodField()
     cantidad_productos = serializers.SerializerMethodField()
@@ -38,19 +43,32 @@ class PedidoSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
     def get_total(self, obj):
-        return float(sum(d.subtotal for d in obj.detalles.all()))
+        return float(obj.total)
+
+    def get_subtotal_original(self, obj):
+        return float(sum(
+            (detalle.subtotal for detalle in obj.detalles.all()),
+            Decimal('0.00'),
+        ))
 
     def get_total_pendiente(self, obj):
         from django.db.models import Sum
         from finanzas.models import Pago
-        total_confirmado = sum(d.subtotal for d in obj.detalles.filter(confirmado=True))
-        total_pagado = Pago.objects.filter(pedido=obj, estado='exitoso').aggregate(Sum('monto'))['monto__sum'] or 0.00
-        return float(max(0.00, float(total_confirmado) - float(total_pagado)))
+        total_pagado = (
+            Pago.objects.filter(pedido=obj, estado='exitoso')
+            .aggregate(Sum('monto'))['monto__sum']
+            or Decimal('0.00')
+        )
+        return float(total_confirmado_pendiente(obj, total_pagado))
 
     def get_total_pagado(self, obj):
         from django.db.models import Sum
         from finanzas.models import Pago
-        total_pagado = Pago.objects.filter(pedido=obj, estado='exitoso').aggregate(Sum('monto'))['monto__sum'] or 0.00
+        total_pagado = (
+            Pago.objects.filter(pedido=obj, estado='exitoso')
+            .aggregate(Sum('monto'))['monto__sum']
+            or Decimal('0.00')
+        )
         return float(total_pagado)
 
     def get_cantidad_productos(self, obj):
@@ -71,15 +89,18 @@ class PedidoSerializer(serializers.ModelSerializer):
                 return 'RESERVADA'
             
             tiene_pendientes = obj.detalles.filter(confirmado=False).exists()
-            total_confirmado = sum(d.subtotal for d in obj.detalles.filter(confirmado=True))
             from django.db.models import Sum
             from finanzas.models import Pago
-            total_pagado = Pago.objects.filter(pedido=obj, estado='exitoso').aggregate(Sum('monto'))['monto__sum'] or 0.00
-            total_pendiente = max(0.00, float(total_confirmado) - float(total_pagado))
+            total_pagado = (
+                Pago.objects.filter(pedido=obj, estado='exitoso')
+                .aggregate(Sum('monto'))['monto__sum']
+                or Decimal('0.00')
+            )
+            total_pendiente = total_confirmado_pendiente(obj, total_pagado)
             
             tiene_detalles = obj.detalles.exists()
             
-            if tiene_detalles and (tiene_pendientes or total_pendiente > 0.00):
+            if tiene_detalles and (tiene_pendientes or total_pendiente > Decimal('0.00')):
                 return 'OCUPADA'
         return 'LIBRE'
 

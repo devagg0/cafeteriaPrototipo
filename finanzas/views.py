@@ -483,17 +483,29 @@ class IniciarPagoPedidoView(APIView):
                 if Pago.objects.filter(pedido=pedido, estado='exitoso').exists():
                     return Response({'error': 'El pedido ya fue pagado con éxito.'}, status=status.HTTP_400_BAD_REQUEST)
 
-                for det in pedido.detalles.all():
+                if pedido.descuento > 0:
                     line_items.append({
                         'price_data': {
                             'currency': 'bob',
                             'product_data': {
-                                'name': det.producto.nombre,
+                                'name': f'Pedido #{pedido.id} con promoción',
                             },
-                            'unit_amount': int(det.precio_unitario * 100),
+                            'unit_amount': int(total * 100),
                         },
-                        'quantity': det.cantidad,
+                        'quantity': 1,
                     })
+                else:
+                    for det in pedido.detalles.all():
+                        line_items.append({
+                            'price_data': {
+                                'currency': 'bob',
+                                'product_data': {
+                                    'name': det.producto.nombre,
+                                },
+                                'unit_amount': int(det.precio_unitario * 100),
+                            },
+                            'quantity': det.cantidad,
+                        })
                 if not line_items:
                     line_items.append({
                         'price_data': {
@@ -658,6 +670,9 @@ class IniciarPagoPedidoView(APIView):
                         metodo_pago=metodo_pago,
                         estado='pendiente'
                     )
+                elif pago.monto != total:
+                    pago.monto = total
+                    pago.save(update_fields=['monto'])
 
                 if metodo_pago == 'stripe':
                     base_success = os.getenv('STRIPE_EMPLOYEE_SUCCESS_URL', 'http://localhost:5173/empleado')

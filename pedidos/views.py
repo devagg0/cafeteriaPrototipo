@@ -9,6 +9,7 @@ from rest_framework.views import APIView
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from decimal import Decimal
 
 from producto.models import Categoria, Producto
 from producto.serializers import CategoriaSerializer, ProductoSerializer
@@ -23,6 +24,7 @@ from usuarios.models import Usuario, Cliente, Bitacora
 from usuarios.views import decodificar_token
 from reservas.models import SalaTematica, Mesa, Reserva
 from .services import notificar_pedido_a_cocina, notificar_pedido_listo_al_mesero
+from .promociones import recalcular_totales_pedido, total_confirmado_pendiente
 
 
 def datos_cliente_presencial(data):
@@ -135,7 +137,13 @@ class IsAuthenticatedJWT(BasePermission):
 # ---------------------------------------------------------------------------
 
 class PedidoViewSet(viewsets.ModelViewSet):
-    queryset = Pedido.objects.select_related('reserva', 'sala', 'mesa', 'usuario').prefetch_related('detalles__producto')
+    queryset = Pedido.objects.select_related(
+        'reserva',
+        'sala',
+        'mesa',
+        'usuario',
+        'promocion',
+    ).prefetch_related('detalles__producto')
     serializer_class = PedidoSerializer
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsEmpleadoOrAdmin]
@@ -149,6 +157,9 @@ class PedidoViewSet(viewsets.ModelViewSet):
 
         if self.action == 'cancelar_pedido':
                     return [IsMeseroOrAdmin()]
+
+        if self.action in ['aplicar_promocion', 'quitar_promocion']:
+            return [IsEmpleadoAtencionOrAdmin()]
 
         return [IsEmpleadoOrAdmin()]
 
@@ -367,6 +378,95 @@ class PedidoViewSet(viewsets.ModelViewSet):
             'mensaje': 'Pedido cancelado correctamente.',
             'pedido': serializer.data
         }, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='aplicar-promocion')
+    def aplicar_promocion(self, request, pk=None):
+        from finanzas.models import Pago
+        from promocion.models import Promocion
+
+        pedido = self.get_object()
+        if pedido.estado == 'cancelado':
+            return Response(
+                {'error': 'No se puede aplicar una promoción a un pedido cancelado.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if Pago.objects.filter(pedido=pedido, estado='exitoso').exists():
+            return Response(
+                {'error': 'No se puede aplicar una promoción a un pedido pagado.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        codigo = (request.data.get('codigo') or '').strip()
+        if not codigo:
+            return Response(
+                {'error': 'El código de promoción es requerido.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        promocion = Promocion.objects.filter(codigo__iexact=codigo).first()
+        if not promocion:
+            return Response(
+                {'error': 'La promoción especificada no existe.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        if not promocion.activa:
+            return Response(
+                {'error': 'La promoción no está activa.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        hoy = timezone.localdate()
+        if not promocion.fecha_inicio <= hoy <= promocion.fecha_fin:
+            return Response(
+                {'error': 'La promoción no está vigente para la fecha actual.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            pedido = Pedido.objects.select_for_update().get(pk=pedido.pk)
+            pedido.promocion = promocion
+            recalcular_totales_pedido(pedido)
+            if pedido.descuento <= Decimal('0.00'):
+                pedido.promocion = None
+                recalcular_totales_pedido(pedido)
+                return Response(
+                    {'error': 'La promoción no aplica a los productos del pedido.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            Bitacora.objects.create(
+                usuario=request.user,
+                accion='aplicar promocion pedido',
+                detalles=f'Promoción {promocion.codigo} aplicada al pedido {pedido.id}.',
+            )
+
+        return Response(self.get_serializer(pedido).data)
+
+    @action(detail=True, methods=['post'], url_path='quitar-promocion')
+    def quitar_promocion(self, request, pk=None):
+        from finanzas.models import Pago
+
+        pedido = self.get_object()
+        if pedido.estado == 'cancelado':
+            return Response(
+                {'error': 'No se puede modificar un pedido cancelado.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if Pago.objects.filter(pedido=pedido, estado='exitoso').exists():
+            return Response(
+                {'error': 'No se puede modificar un pedido pagado.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            pedido = Pedido.objects.select_for_update().get(pk=pedido.pk)
+            pedido.promocion = None
+            recalcular_totales_pedido(pedido)
+            Bitacora.objects.create(
+                usuario=request.user,
+                accion='quitar promocion pedido',
+                detalles=f'Promoción retirada del pedido {pedido.id}.',
+            )
+
+        return Response(self.get_serializer(pedido).data)
 
 # ---------------------------------------------------------------------------
 # PreordenViewSet
@@ -804,9 +904,7 @@ class AgregarDetallePedidoView(APIView):
                     observaciones=observaciones
                 )
 
-            # Update order total
-            pedido.total = sum(d.subtotal for d in pedido.detalles.all())
-            pedido.save()
+            recalcular_totales_pedido(pedido)
 
             serializer = PedidoSerializer(pedido, context={'request': request})
             return Response(serializer.data, status=status.HTTP_200_OK)
@@ -854,9 +952,7 @@ class ActualizarEliminarDetallePedidoView(APIView):
 
             detalle.save()
 
-            # Update order total
-            pedido.total = sum(d.subtotal for d in pedido.detalles.all())
-            pedido.save()
+            recalcular_totales_pedido(pedido)
 
             serializer = PedidoSerializer(pedido, context={'request': request})
             return Response(serializer.data, status=status.HTTP_200_OK)
@@ -880,9 +976,7 @@ class ActualizarEliminarDetallePedidoView(APIView):
             # Delete detail
             detalle.delete()
 
-            # Update order total
-            pedido.total = sum(d.subtotal for d in pedido.detalles.all())
-            pedido.save()
+            recalcular_totales_pedido(pedido)
 
             serializer = PedidoSerializer(pedido, context={'request': request})
             return Response(serializer.data, status=status.HTTP_200_OK)
@@ -1013,9 +1107,12 @@ class ResumenPagoView(APIView):
         
         # Calculate totals
         total = pedido.total
-        total_confirmado = sum(d.subtotal for d in pedido.detalles.filter(confirmado=True))
-        total_pagado = Pago.objects.filter(pedido=pedido, estado='exitoso').aggregate(Sum('monto'))['monto__sum'] or 0.00
-        total_pendiente = max(0.00, float(total_confirmado) - float(total_pagado))
+        total_pagado = (
+            Pago.objects.filter(pedido=pedido, estado='exitoso')
+            .aggregate(Sum('monto'))['monto__sum']
+            or Decimal('0.00')
+        )
+        total_pendiente = total_confirmado_pendiente(pedido, total_pagado)
 
         productos_confirmados = DetallePedidoSerializer(pedido.detalles.filter(confirmado=True), many=True).data
         productos_pendientes = DetallePedidoSerializer(pedido.detalles.filter(confirmado=False), many=True).data
@@ -1031,7 +1128,7 @@ class ResumenPagoView(APIView):
         elif has_pending:
             puede_pagar = False
             motivo_bloqueo_pago = "Confirma los productos pendientes antes de realizar el pago"
-        elif total_pendiente <= 0:
+        elif total_pendiente <= Decimal('0.00'):
             puede_pagar = False
             motivo_bloqueo_pago = "El pedido ya está totalmente pagado"
 
@@ -1040,7 +1137,7 @@ class ResumenPagoView(APIView):
             "mesa": pedido.mesa.nombre if pedido.mesa else None,
             "sala": pedido.sala.nombre if pedido.sala else (pedido.mesa.sala.nombre if pedido.mesa else None),
             "estado_pedido": pedido.estado,
-            "estado_pago": "PAGADO" if total_pendiente <= 0 and not has_pending and len(pedido.detalles.all()) > 0 else "PENDIENTE",
+            "estado_pago": "PAGADO" if total_pendiente <= Decimal('0.00') and not has_pending and len(pedido.detalles.all()) > 0 else "PENDIENTE",
             "total": f"{total:.2f}",
             "total_pagado": f"{total_pagado:.2f}",
             "total_pendiente": f"{total_pendiente:.2f}",
@@ -1071,11 +1168,14 @@ class PagarEfectivoView(APIView):
             pedido = Pedido.objects.select_for_update().get(id=id)
             
             # Recalculate total_pendiente to prevent race conditions
-            total_confirmado = sum(d.subtotal for d in pedido.detalles.filter(confirmado=True))
-            total_pagado = Pago.objects.filter(pedido=pedido, estado='exitoso').aggregate(Sum('monto'))['monto__sum'] or 0.00
-            total_pendiente = max(0.00, float(total_confirmado) - float(total_pagado))
+            total_pagado = (
+                Pago.objects.filter(pedido=pedido, estado='exitoso')
+                .aggregate(Sum('monto'))['monto__sum']
+                or Decimal('0.00')
+            )
+            total_pendiente = total_confirmado_pendiente(pedido, total_pagado)
 
-            if total_pendiente <= 0:
+            if total_pendiente <= Decimal('0.00'):
                 return Response({'error': 'El pedido ya está totalmente pagado'}, status=status.HTTP_400_BAD_REQUEST)
 
             # Create Pago

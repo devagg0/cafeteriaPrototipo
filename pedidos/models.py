@@ -23,6 +23,14 @@ class Pedido(models.Model):
         blank=True,
     )
     nombre_cliente = models.CharField(max_length=100, default='Cliente presencial')
+    promocion = models.ForeignKey(
+        'promocion.Promocion',
+        on_delete=models.SET_NULL,
+        related_name='pedidos',
+        null=True,
+        blank=True,
+    )
+    descuento = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     total = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     notas = models.TextField(blank=True, null=True)
     estado = models.CharField(max_length=20, choices=ESTADOS_PEDIDO, default='pendiente')
