@@ -30,6 +30,8 @@ class PedidoSerializer(serializers.ModelSerializer):
     cantidad_pendientes = serializers.SerializerMethodField()
     cantidad_confirmados = serializers.SerializerMethodField()
     estado_mesa = serializers.SerializerMethodField()
+    cliente_nombre = serializers.SerializerMethodField()
+    cliente_id = serializers.ReadOnlyField(source='cliente.id_usuario.id_usuario')
 
     class Meta:
         model = Pedido
@@ -80,6 +82,10 @@ class PedidoSerializer(serializers.ModelSerializer):
             if tiene_detalles and (tiene_pendientes or total_pendiente > 0.00):
                 return 'OCUPADA'
         return 'LIBRE'
+
+    def get_cliente_nombre(self, obj):
+        from .services import nombre_cliente_pedido
+        return nombre_cliente_pedido(obj)
 
 class CocinaDetallePedidoSerializer(serializers.ModelSerializer):
     producto_id = serializers.ReadOnlyField(source='producto.id')
@@ -134,7 +140,15 @@ class CocinaComandaSerializer(serializers.ModelSerializer):
                 'id': obj.reserva.cliente.id_usuario.id_usuario,
                 'nombre': obj.reserva.cliente.id_usuario.nombre,
             }
-        return None
+        if obj.cliente and obj.cliente.id_usuario:
+            return {
+                'id': obj.cliente.id_usuario.id_usuario,
+                'nombre': obj.cliente.id_usuario.nombre,
+            }
+        return {
+            'id': None,
+            'nombre': obj.nombre_cliente or 'Cliente presencial',
+        }
 
     def get_sala(self, obj):
         if obj.sala:

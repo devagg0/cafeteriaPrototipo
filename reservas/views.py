@@ -485,9 +485,8 @@ class ReservaViewSet(viewsets.ModelViewSet):
             )
 
         reserva.estado = 'confirmada'
-        reserva.save()
-        reserva.mesa.estado = 'reservada'
-        reserva.mesa.save()
+        reserva.save(update_fields=['estado'])
+        actualizar_estado_mesa(reserva.mesa)
 
         Bitacora.objects.create(
             usuario=request.user,

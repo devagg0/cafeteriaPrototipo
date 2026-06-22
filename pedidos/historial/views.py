@@ -94,6 +94,8 @@ class HistorialListView(APIView):
 def pedido_pertenece_al_usuario(pedido, usuario):
     if pedido.usuario == usuario:
         return True
+    if getattr(getattr(pedido, 'cliente', None), 'id_usuario', None) == usuario:
+        return True
     reserva = reserva_relacionada_pedido(pedido)
     cliente_usuario = getattr(getattr(getattr(reserva, 'cliente', None), 'id_usuario', None), 'id_usuario', None)
     return cliente_usuario == getattr(usuario, 'id_usuario', None)
@@ -223,6 +225,7 @@ class HistorialDetailView(APIView):
             Pedido.objects.select_related(
                 'usuario',
                 'usuario__cod_rol',
+                'cliente__id_usuario',
                 'reserva__cliente__id_usuario',
                 'reserva__sala',
                 'reserva__mesa',
@@ -234,8 +237,14 @@ class HistorialDetailView(APIView):
 
         try:
             cliente_reserva = getattr(getattr(getattr(pedido, 'reserva', None), 'cliente', None), 'id_usuario', None)
+            cliente_directo = getattr(getattr(pedido, 'cliente', None), 'id_usuario', None)
             es_cliente = request.user.cod_rol.cod_rol == 'cliente'
-            if es_cliente and pedido.usuario != request.user and cliente_reserva != request.user:
+            if (
+                es_cliente
+                and pedido.usuario != request.user
+                and cliente_reserva != request.user
+                and cliente_directo != request.user
+            ):
                 return Response({'error': 'No autorizado'}, status=status.HTTP_403_FORBIDDEN)
         except Exception:
             return Response({'error': 'No autorizado'}, status=status.HTTP_403_FORBIDDEN)

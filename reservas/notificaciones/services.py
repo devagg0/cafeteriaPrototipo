@@ -56,7 +56,7 @@ def marcar_notificacion_leida(notificacion: NotificacionReserva, usuario) -> boo
 
 	if notificacion.reserva.cliente == cliente:
 		notificacion.leido = True
-		notificacion.save()
+		notificacion.save(update_fields=['leido'])
 		return True
 	return False
 

@@ -22,6 +22,42 @@ from .permissions import IsCocinero
 from usuarios.models import Usuario, Cliente, Bitacora
 from usuarios.views import decodificar_token
 from reservas.models import SalaTematica, Mesa, Reserva
+from .services import notificar_pedido_a_cocina, notificar_pedido_listo_al_mesero
+
+
+def datos_cliente_presencial(data):
+    cliente_id = data.get('cliente_id')
+    nombre_cliente = (data.get('nombre_cliente') or '').strip()
+    if cliente_id:
+        try:
+            cliente = Cliente.objects.select_related('id_usuario').get(
+                id_usuario__id_usuario=cliente_id,
+            )
+        except Cliente.DoesNotExist:
+            raise ValueError('El cliente seleccionado no existe.')
+        return cliente, cliente.id_usuario.nombre
+    return None, nombre_cliente or 'Cliente presencial'
+
+
+def serializar_notificacion(notificacion):
+    pedido = notificacion.pedido
+    return {
+        'id': notificacion.id,
+        'tipo': notificacion.tipo,
+        'titulo': notificacion.titulo,
+        'mensaje': notificacion.mensaje,
+        'leido': notificacion.leido,
+        'fecha': notificacion.fecha_creacion,
+        'pedido_id': pedido.id if pedido else None,
+        'pedido_estado': pedido.estado if pedido else None,
+        'cliente': (
+            pedido.reserva.cliente.id_usuario.nombre
+            if pedido and pedido.reserva_id
+            else pedido.nombre_cliente if pedido else None
+        ),
+        'sala': pedido.sala.nombre if pedido and pedido.sala else None,
+        'mesa': pedido.mesa.nombre if pedido and pedido.mesa else None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +163,10 @@ class PedidoViewSet(viewsets.ModelViewSet):
         sala_id = data.get('sala_id')
         mesa_id = data.get('mesa_id')
         productos_req = data.get('productos', [])
+        try:
+            cliente, nombre_cliente = datos_cliente_presencial(data)
+        except ValueError as exc:
+            return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         if not sala_id or not mesa_id:
             return Response(
@@ -193,6 +233,8 @@ class PedidoViewSet(viewsets.ModelViewSet):
                     sala=sala,
                     mesa=mesa,
                     usuario=request.user,
+                    cliente=cliente,
+                    nombre_cliente=nombre_cliente,
                     total=total,
                     estado='confirmado',
                 )
@@ -217,6 +259,7 @@ class PedidoViewSet(viewsets.ModelViewSet):
                     accion='crear pedido mesero',
                     detalles=f'Pedido {pedido.id} — Mesa {mesa.nombre}',
                 )
+                notificar_pedido_a_cocina(pedido)
 
         except ValueError as exc:
             return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -570,6 +613,7 @@ class CocinaComandasView(APIView):
             'reserva__cliente__id_usuario',
             'reserva__sala',
             'reserva__mesa',
+            'cliente__id_usuario',
             'sala',
             'mesa',
             'usuario__cod_rol',
@@ -590,6 +634,7 @@ class CocinaComandaDetailView(APIView):
                 'reserva__cliente__id_usuario',
                 'reserva__sala',
                 'reserva__mesa',
+                'cliente__id_usuario',
                 'sala',
                 'mesa',
                 'usuario__cod_rol',
@@ -631,22 +676,14 @@ class CocinaComandaListaView(APIView):
         pedido.estado = 'lista'
         pedido.save()
 
-        mesero = None
-        if pedido.usuario and getattr(pedido.usuario, 'cod_rol', None) and pedido.usuario.cod_rol.cod_rol == 'mesero':
-            mesero = pedido.usuario
-
         mensaje = 'Comanda marcada como Lista.'
-        if mesero:
-            Notificacion.objects.create(
-                usuario_destino=mesero,
-                pedido=pedido,
-                titulo='Pedido listo',
-                mensaje=f'El pedido #{pedido.id} está listo para recoger en cocina.',
-                leido=False,
-            )
+        notificacion_creada = notificar_pedido_listo_al_mesero(pedido)
+        if notificacion_creada is True:
             mensaje += ' Notificación enviada al mesero responsable.'
+        elif notificacion_creada is False:
+            mensaje += ' El mesero responsable ya estaba notificado.'
         else:
-            mensaje += ' No se encontró mesero responsable para notificar.'
+            mensaje += ' No se encontró un mesero responsable para notificar.'
 
         serializer = CocinaComandaDetailSerializer(pedido, context={'request': request})
         return Response({'message': mensaje, 'pedido': serializer.data})
@@ -674,12 +711,20 @@ class IniciarPedidoMesaView(APIView):
 
     def post(self, request, mesa_id):
         mesa = get_object_or_404(Mesa, id=mesa_id)
+        try:
+            cliente, nombre_cliente = datos_cliente_presencial(request.data)
+        except ValueError as exc:
+            return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         with transaction.atomic():
             from pedidos.services import obtener_pedido_activo
             pedido = obtener_pedido_activo(mesa)
 
             if pedido:
                 pedido = Pedido.objects.select_for_update().get(id=pedido.id)
+                if pedido.estado == 'pendiente' and not pedido.detalles.exists():
+                    pedido.cliente = cliente
+                    pedido.nombre_cliente = nombre_cliente
+                    pedido.save(update_fields=['cliente', 'nombre_cliente'])
             else:
                 # If the mesa is disponible, transition it to occupied
                 if mesa.estado == 'disponible':
@@ -697,6 +742,8 @@ class IniciarPedidoMesaView(APIView):
                     sala=mesa.sala,
                     mesa=mesa,
                     usuario=request.user,
+                    cliente=cliente,
+                    nombre_cliente=nombre_cliente,
                     total=0.00,
                     estado='pendiente'
                 )
@@ -857,6 +904,7 @@ class ConfirmarPedidoView(APIView):
             
             from finanzas.models import Pago
             if not detalles_pendientes.exists():
+                notificar_pedido_a_cocina(pedido)
                 serializer = PedidoSerializer(pedido, context={'request': request})
                 return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -881,9 +929,77 @@ class ConfirmarPedidoView(APIView):
                 accion='confirmar pedido',
                 detalles=f'Pedido ID {pedido.id} confirmado por mesero.'
             )
+            notificar_pedido_a_cocina(pedido)
 
             serializer = PedidoSerializer(pedido, context={'request': request})
             return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class ClientesPedidoBuscarView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsEmpleadoAtencionOrAdmin]
+
+    def get(self, request):
+        termino = request.query_params.get('q', '').strip()
+        clientes = Cliente.objects.select_related('id_usuario').order_by('id_usuario__nombre')
+        if termino:
+            from django.db.models import Q
+            clientes = clientes.filter(
+                Q(id_usuario__nombre__icontains=termino)
+                | Q(id_usuario__correo__icontains=termino)
+            )
+        return Response([
+            {
+                'id': cliente.id_usuario.id_usuario,
+                'nombre': cliente.id_usuario.nombre,
+                'correo': cliente.id_usuario.correo,
+            }
+            for cliente in clientes[:10]
+        ])
+
+
+class NotificacionesOperativasView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticatedJWT]
+
+    def get(self, request):
+        try:
+            limite = min(max(int(request.query_params.get('limite', 10)), 1), 50)
+        except (TypeError, ValueError):
+            limite = 10
+        notificaciones = (
+            Notificacion.objects.filter(usuario_destino=request.user)
+            .select_related(
+                'pedido__sala',
+                'pedido__mesa',
+                'pedido__cliente__id_usuario',
+                'pedido__reserva__cliente__id_usuario',
+            )
+            .order_by('-fecha_creacion')[:limite]
+        )
+        return Response({
+            'results': [serializar_notificacion(n) for n in notificaciones],
+            'no_leidas': Notificacion.objects.filter(
+                usuario_destino=request.user,
+                leido=False,
+            ).count(),
+        })
+
+
+class NotificacionOperativaLeidaView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticatedJWT]
+
+    def patch(self, request, pk):
+        notificacion = get_object_or_404(
+            Notificacion,
+            id=pk,
+            usuario_destino=request.user,
+        )
+        if not notificacion.leido:
+            notificacion.leido = True
+            notificacion.save(update_fields=['leido'])
+        return Response(serializar_notificacion(notificacion))
 
 
 class ResumenPagoView(APIView):

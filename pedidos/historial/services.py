@@ -8,6 +8,7 @@ def filtrar_pedidos(params, user=None):
         Pedido.objects.select_related(
             'usuario',
             'usuario__cod_rol',
+            'cliente__id_usuario',
             'reserva__cliente__id_usuario',
             'reserva__sala',
             'reserva__mesa',
@@ -46,13 +47,23 @@ def filtrar_pedidos(params, user=None):
 
     # Si el usuario es cliente, solo ver sus pedidos
     if user and getattr(user, 'cod_rol', None) and user.cod_rol.cod_rol == 'cliente':
-        qs = qs.filter(Q(usuario=user) | Q(reserva__cliente__id_usuario=user))
+        qs = qs.filter(
+            Q(usuario=user)
+            | Q(cliente__id_usuario=user)
+            | Q(reserva__cliente__id_usuario=user)
+        )
     else:
         # Filtrar por cliente real cuando el pedido viene de una reserva.
         if cliente:
             if cliente.isdigit():
-                qs = qs.filter(reserva__cliente__id_usuario__id_usuario=int(cliente))
+                qs = qs.filter(
+                    Q(cliente__id_usuario__id_usuario=int(cliente))
+                    | Q(reserva__cliente__id_usuario__id_usuario=int(cliente))
+                )
             else:
-                qs = qs.filter(reserva__cliente__id_usuario__nombre__icontains=cliente)
+                qs = qs.filter(
+                    Q(cliente__id_usuario__nombre__icontains=cliente)
+                    | Q(reserva__cliente__id_usuario__nombre__icontains=cliente)
+                )
 
     return qs.order_by('-created_at')

@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 
 from django.utils import timezone
 
-from .models import Reserva
+from .models import Mesa, Reserva
 
 
 ANTICIPACION_CANCELACION_CLIENTE = timedelta(minutes=30)
@@ -42,15 +42,27 @@ def validar_horario_checkin(reserva, ahora=None):
     return True, ''
 
 
-def actualizar_estado_mesa(mesa):
-    reservas_activas = Reserva.objects.filter(
+def actualizar_estado_mesa(mesa, ahora=None):
+    from pedidos.services import mesa_tiene_deudas_activas
+
+    ahora = timezone.localtime(ahora or timezone.now())
+    reservas_hoy = Reserva.objects.filter(
         mesa=mesa,
-        estado__in=['pendiente', 'confirmada', 'en_curso'],
+        fecha=ahora.date(),
+        estado__in=['confirmada', 'en_curso'],
     )
 
-    if reservas_activas.filter(estado='en_curso').exists():
+    reserva_en_curso = reservas_hoy.filter(estado='en_curso').exists()
+    reserva_en_ventana = any(
+        fecha_hora_reserva(reserva, 'hora_inicio') - ANTICIPACION_CHECKIN
+        <= ahora
+        < fecha_hora_reserva(reserva, 'hora_fin')
+        for reserva in reservas_hoy.filter(estado='confirmada')
+    )
+
+    if reserva_en_curso or mesa_tiene_deudas_activas(mesa):
         mesa.estado = 'ocupada'
-    elif reservas_activas.exists():
+    elif reserva_en_ventana:
         mesa.estado = 'reservada'
     else:
         mesa.estado = 'disponible'
@@ -82,16 +94,23 @@ def sincronizar_reservas_vencidas(ahora=None):
     que terminaron sin check-in pasan a no_asistio.
     """
     ahora = timezone.localtime(ahora or timezone.now())
+    reservas_activas = Reserva.objects.filter(
+        estado__in=['pendiente', 'confirmada', 'en_curso'],
+    ).select_related('mesa')
     candidatas = (
-        Reserva.objects.filter(
-            estado__in=['pendiente', 'confirmada', 'en_curso'],
-            fecha__lte=ahora.date(),
-        )
+        reservas_activas.filter(fecha__lte=ahora.date())
         .select_related('mesa')
         .order_by('fecha', 'hora_fin')
     )
 
-    mesas_afectadas = {}
+    mesas_afectadas = {
+        mesa.id: mesa
+        for mesa in Mesa.objects.filter(estado='reservada')
+    }
+    mesas_afectadas.update({
+        reserva.mesa_id: reserva.mesa
+        for reserva in reservas_activas
+    })
     for reserva in candidatas:
         if fecha_hora_reserva(reserva, 'hora_fin') > ahora:
             continue
@@ -104,6 +123,6 @@ def sincronizar_reservas_vencidas(ahora=None):
         mesas_afectadas[reserva.mesa_id] = reserva.mesa
 
     for mesa in mesas_afectadas.values():
-        actualizar_estado_mesa(mesa)
+        actualizar_estado_mesa(mesa, ahora)
 
     return len(mesas_afectadas)

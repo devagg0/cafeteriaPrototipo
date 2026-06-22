@@ -15,6 +15,9 @@ from .views import (
     ConfirmarPedidoView,
     ResumenPagoView,
     PagarEfectivoView,
+    ClientesPedidoBuscarView,
+    NotificacionesOperativasView,
+    NotificacionOperativaLeidaView,
 )
 
 router = DefaultRouter()
@@ -37,6 +40,9 @@ urlpatterns = [
     path('pedidos/<int:id>/confirmar/', ConfirmarPedidoView.as_view(), name='confirmar-pedido-detalle'),
     path('pedidos/<int:id>/resumen-pago/', ResumenPagoView.as_view(), name='resumen-pago-pedido'),
     path('pedidos/<int:id>/pagar-efectivo/', PagarEfectivoView.as_view(), name='pagar-efectivo-pedido'),
+    path('pedidos/clientes/buscar/', ClientesPedidoBuscarView.as_view(), name='buscar-clientes-pedido'),
+    path('pedidos/notificaciones/', NotificacionesOperativasView.as_view(), name='notificaciones-operativas'),
+    path('pedidos/notificaciones/<int:pk>/leer/', NotificacionOperativaLeidaView.as_view(), name='notificacion-operativa-leer'),
     
     path('', include(router.urls)),
 ]
