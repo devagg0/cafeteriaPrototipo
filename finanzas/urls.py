@@ -6,7 +6,10 @@ from .views import (
     ConfirmarPagoQRView,
     NotaVentaPedidoView,
     CancelarPagoPedidoView,
-    CancelarPagoReservaView
+    CancelarPagoReservaView,
+    ReporteEstaticoView,
+    ReporteDinamicoView,
+    ReporteVozView,
 )
 
 urlpatterns = [
@@ -17,4 +20,7 @@ urlpatterns = [
     path('finanzas/nota-venta-pedido/', NotaVentaPedidoView.as_view(), name='nota-venta-pedido'),
     path('finanzas/cancelar-pago-pedido/', CancelarPagoPedidoView.as_view(), name='cancelar-pago-pedido'),
     path('finanzas/cancelar-pago-reserva/', CancelarPagoReservaView.as_view(), name='cancelar-pago-reserva'),
+    path('finanzas/reportes/estatico/', ReporteEstaticoView.as_view(), name='reporte-estatico'),
+    path('finanzas/reportes/dinamico/', ReporteDinamicoView.as_view(), name='reporte-dinamico'),
+    path('finanzas/reportes/voz/', ReporteVozView.as_view(), name='reporte-voz'),
 ]

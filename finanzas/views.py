@@ -11,6 +11,7 @@ from pedidos.models import Preorden, DetallePreorden, Pedido, DetallePedido
 from producto.models import Producto
 from usuarios.models import Cliente, Bitacora, Usuario
 from .models import Pago
+from .reportes import interpretar_reporte_voz, reporte_dinamico, reporte_estatico
 from reservas.views import JWTAuthentication, IsAuthenticatedJWT, IsEmpleadoOrAdmin
 from rest_framework.permissions import BasePermission
 
@@ -836,3 +837,53 @@ class CancelarPagoReservaView(APIView):
             return Response({'error': 'Reserva no encontrada'}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
             return Response({'error': f'Error al cancelar reserva: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class ReporteEstaticoView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsEmpleadoAtencionOrAdmin]
+
+    def get(self, request):
+        try:
+            return Response(reporte_estatico(request.query_params))
+        except ValueError:
+            return Response(
+                {'error': 'Formato de fecha invalido. Use YYYY-MM-DD.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+
+class ReporteDinamicoView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsEmpleadoAtencionOrAdmin]
+
+    def get(self, request):
+        try:
+            return Response(reporte_dinamico(request.query_params))
+        except ValueError:
+            return Response(
+                {'error': 'Formato de fecha invalido. Use YYYY-MM-DD.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+
+class ReporteVozView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsEmpleadoAtencionOrAdmin]
+
+    def post(self, request):
+        texto = request.data.get('texto') or request.data.get('consulta') or ''
+        params = {
+            'fecha_inicio': request.data.get('fecha_inicio'),
+            'fecha_fin': request.data.get('fecha_fin'),
+            'umbral_stock': request.data.get('umbral_stock'),
+        }
+        params = {key: value for key, value in params.items() if value not in [None, '']}
+
+        try:
+            return Response(interpretar_reporte_voz(texto, params))
+        except ValueError:
+            return Response(
+                {'error': 'Formato de fecha invalido. Use YYYY-MM-DD.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
