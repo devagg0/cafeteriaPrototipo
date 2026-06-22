@@ -15,8 +15,19 @@ class Pedido(models.Model):
     sala = models.ForeignKey('reservas.SalaTematica', on_delete=models.SET_NULL, null=True, blank=True, related_name='pedidos_directos')
     mesa = models.ForeignKey('reservas.Mesa', on_delete=models.SET_NULL, null=True, blank=True, related_name='pedidos_directos')
     usuario = models.ForeignKey('usuarios.Usuario', on_delete=models.CASCADE, related_name='pedidos')
+<<<<<<< HEAD
     promocion = models.ForeignKey('promocion.Promocion', on_delete=models.SET_NULL, null=True, blank=True, related_name='pedidos')
     descuento = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+=======
+    cliente = models.ForeignKey(
+        'usuarios.Cliente',
+        on_delete=models.SET_NULL,
+        related_name='pedidos_presenciales',
+        null=True,
+        blank=True,
+    )
+    nombre_cliente = models.CharField(max_length=100, default='Cliente presencial')
+>>>>>>> origin
     total = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     notas = models.TextField(blank=True, null=True)
     estado = models.CharField(max_length=20, choices=ESTADOS_PEDIDO, default='pendiente')
@@ -49,6 +60,10 @@ class DetallePedido(models.Model):
         return f'Detalle {self.id} - Producto {self.producto.nombre}'
 
 class Notificacion(models.Model):
+    TIPOS = [
+        ('nuevo_pedido', 'Nuevo pedido'),
+        ('pedido_listo', 'Pedido listo'),
+    ]
     usuario_destino = models.ForeignKey(
         'usuarios.Usuario',
         on_delete=models.CASCADE,
@@ -63,12 +78,19 @@ class Notificacion(models.Model):
     )
     titulo = models.CharField(max_length=100)
     mensaje = models.TextField()
+    tipo = models.CharField(max_length=30, choices=TIPOS)
     leido = models.BooleanField(default=False)
     fecha_creacion = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = 'notificacion'
         app_label = 'pedidos'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['usuario_destino', 'pedido', 'tipo'],
+                name='notificacion_operativa_unica',
+            ),
+        ]
 
     def __str__(self):
         return f'{self.titulo} - {self.usuario_destino.nombre}'

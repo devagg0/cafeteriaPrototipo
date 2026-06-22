@@ -39,7 +39,10 @@ def nombre_cliente_pedido(pedido):
     usuario_cliente = getattr(cliente, 'id_usuario', None)
     if usuario_cliente:
         return usuario_cliente.nombre
-    return 'Cliente en mesa'
+    cliente_directo = getattr(pedido, 'cliente', None)
+    if cliente_directo and cliente_directo.id_usuario:
+        return cliente_directo.id_usuario.nombre
+    return pedido.nombre_cliente or 'Cliente presencial'
 
 
 def origen_pedido(pedido):

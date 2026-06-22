@@ -15,6 +15,12 @@ from datetime import datetime, timedelta
 from producto.models import Producto
 from pedidos.models import Preorden, DetallePreorden
 from reservas.notificaciones import services as notif_services
+from reservas.services import (
+    actualizar_estado_mesa,
+    sincronizar_reservas_vencidas,
+    validar_cancelacion_cliente,
+    validar_horario_checkin,
+)
 
 
 # --- AUTENTICACIÓN CUSTOM ---
@@ -108,6 +114,7 @@ class SalaTematicaViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'])
     def disponibilidad(self, request, pk=None):
+        sincronizar_reservas_vencidas()
         sala = self.get_object()
         fecha_str = request.query_params.get('fecha')
         if not fecha_str:
@@ -165,6 +172,7 @@ class SalaTematicaViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'])
     def mesas(self, request, pk=None):
+        sincronizar_reservas_vencidas()
         sala = self.get_object()
         mesas = Mesa.objects.filter(sala=sala, activa=True)
         serializer = MesaSerializer(mesas, many=True)
@@ -194,6 +202,10 @@ class ReservaViewSet(viewsets.ModelViewSet):
     serializer_class = ReservaSerializer
     authentication_classes = [JWTAuthentication]
 
+    def get_queryset(self):
+        sincronizar_reservas_vencidas()
+        return Reserva.objects.all()
+
     def get_permissions(self):
 
     # CLIENTE
@@ -217,6 +229,7 @@ class ReservaViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'])
     def mis_reservas(self, request):
+        sincronizar_reservas_vencidas()
         if request.user.cod_rol.cod_rol != 'cliente':
             return Response({'error': 'Solo los clientes tienen "mis reservas"'}, status=status.HTTP_400_BAD_REQUEST)
         
@@ -402,11 +415,18 @@ class ReservaViewSet(viewsets.ModelViewSet):
         from django.db import transaction
 
         reserva = self.get_object()
+        rol = request.user.cod_rol.cod_rol
+
+        if rol not in ['cliente', 'admin', 'mesero', 'emp']:
+            return Response(
+                {'error': 'No tienes permiso para cancelar reservas'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         if reserva.fecha < timezone.localdate():
             return Response({'error': 'No puedes cancelar reservas pasadas'}, status=400)
 
-        if request.user.cod_rol.cod_rol == 'cliente':
+        if rol == 'cliente':
             if reserva.cliente.id_usuario.id_usuario != request.user.id_usuario:
                 return Response({'error': 'No puedes cancelar reservas de otros'}, status=status.HTTP_403_FORBIDDEN)
 
@@ -415,6 +435,11 @@ class ReservaViewSet(viewsets.ModelViewSet):
                 {'error': f'No se puede cancelar una reserva en estado {reserva.estado}'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+        if rol == 'cliente':
+            puede_cancelar, mensaje = validar_cancelacion_cliente(reserva)
+            if not puede_cancelar:
+                return Response({'error': mensaje}, status=status.HTTP_400_BAD_REQUEST)
 
         # 1. Cancelar la reserva (obligatorio — nunca debe fallar por la preorden)
         with transaction.atomic():
@@ -460,9 +485,8 @@ class ReservaViewSet(viewsets.ModelViewSet):
             )
 
         reserva.estado = 'confirmada'
-        reserva.save()
-        reserva.mesa.estado = 'reservada'
-        reserva.mesa.save()
+        reserva.save(update_fields=['estado'])
+        actualizar_estado_mesa(reserva.mesa)
 
         Bitacora.objects.create(
             usuario=request.user,
@@ -491,6 +515,9 @@ class ReservaViewSet(viewsets.ModelViewSet):
                 {'error': f'Solo reservas confirmadas pueden iniciar. Estado actual: {reserva.estado}'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        puede_hacer_checkin, mensaje = validar_horario_checkin(reserva)
+        if not puede_hacer_checkin:
+            return Response({'error': mensaje}, status=status.HTTP_400_BAD_REQUEST)
         if reserva.mesa.estado != 'reservada':
             return Response({'error': 'La mesa no está reservada'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -569,33 +596,15 @@ class ReservaViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['patch'])
     def finalizar(self, request, pk=None):
         reserva = self.get_object()
+        if reserva.estado != 'en_curso':
+            return Response(
+                {'error': f'Solo se puede finalizar una reserva en curso. Estado actual: {reserva.estado}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         reserva.estado = 'finalizada'
-        reserva.save()
-        return Response({'mensaje': 'Reserva finalizada'})
-
-def actualizar_estado_mesa(mesa):
-
-    reservas_activas = Reserva.objects.filter(
-        mesa=mesa,
-        estado__in=['pendiente', 'confirmada', 'en_curso']
-    ).exists()
-
-    if reservas_activas:
-
-        reserva_en_curso = Reserva.objects.filter(
-            mesa=mesa,
-            estado='en_curso'
-        ).exists()
-
-        if reserva_en_curso:
-            mesa.estado = 'ocupada'
-        else:
-            mesa.estado = 'reservada'
-
-    else:
-        mesa.estado = 'disponible'
-
-    mesa.save()
+        reserva.save(update_fields=['estado'])
+        actualizar_estado_mesa(reserva.mesa)
+        return Response({'mensaje': 'Reserva finalizada y mesa liberada'})
 
 
 class MesaEstadoView(APIView):
@@ -672,4 +681,3 @@ class MesaEstadoView(APIView):
             'estado': mesa.estado,
             'estado_display': mesa.get_estado_display()
         }, status=status.HTTP_200_OK)
-

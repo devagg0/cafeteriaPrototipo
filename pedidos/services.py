@@ -1,5 +1,53 @@
 from .models import Preorden, Pedido, DetallePedido
-from usuarios.models import Bitacora
+from usuarios.models import Bitacora, Usuario
+
+
+def nombre_cliente_pedido(pedido):
+    if pedido.reserva_id:
+        return pedido.reserva.cliente.id_usuario.nombre
+    if pedido.cliente_id:
+        return pedido.cliente.id_usuario.nombre
+    return pedido.nombre_cliente or 'Cliente presencial'
+
+
+def notificar_pedido_a_cocina(pedido):
+    from .models import Notificacion
+
+    cliente = nombre_cliente_pedido(pedido)
+    ubicacion = f'{pedido.sala.nombre if pedido.sala else "Sala"} · {pedido.mesa.nombre if pedido.mesa else "Mesa"}'
+    creadas = 0
+    cocineros = Usuario.objects.filter(cod_rol__cod_rol='cocinero')
+    for cocinero in cocineros:
+        _, creada = Notificacion.objects.get_or_create(
+            usuario_destino=cocinero,
+            pedido=pedido,
+            tipo='nuevo_pedido',
+            defaults={
+                'titulo': f'Nuevo pedido #{pedido.id}',
+                'mensaje': f'Pedido de {cliente} en {ubicacion}. Ya está en cola para preparación.',
+            },
+        )
+        creadas += int(creada)
+    return creadas
+
+
+def notificar_pedido_listo_al_mesero(pedido):
+    from .models import Notificacion
+
+    responsable = pedido.usuario
+    if not responsable or responsable.cod_rol.cod_rol not in ['mesero', 'emp', 'admin']:
+        return None
+    cliente = nombre_cliente_pedido(pedido)
+    _, creada = Notificacion.objects.get_or_create(
+        usuario_destino=responsable,
+        pedido=pedido,
+        tipo='pedido_listo',
+        defaults={
+            'titulo': f'Pedido #{pedido.id} listo',
+            'mensaje': f'El pedido de {cliente} está listo para recoger en cocina.',
+        },
+    )
+    return creada
 
 def cancelar_preorden_por_reserva(reserva, usuario):
     preorden = Preorden.objects.filter(reserva=reserva).first()
@@ -87,6 +135,8 @@ def convertir_preorden_a_pedido_por_checkin(reserva, usuario):
         sala=reserva.sala,
         mesa=reserva.mesa,
         usuario=usuario_pedido,
+        cliente=reserva.cliente,
+        nombre_cliente=reserva.cliente.id_usuario.nombre,
         total=total,
         estado='confirmado',
     )
@@ -112,6 +162,7 @@ def convertir_preorden_a_pedido_por_checkin(reserva, usuario):
             f'mesero_responsable={usuario_mesero.nombre if usuario_mesero else "Sin mesero asignado"}'
         ),
     )
+    notificar_pedido_a_cocina(pedido)
     return {
         'preorden_id': preorden.id,
         'preorden_estado': 'con_pedido',
