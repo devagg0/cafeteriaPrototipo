@@ -15,6 +15,8 @@ class Pedido(models.Model):
     sala = models.ForeignKey('reservas.SalaTematica', on_delete=models.SET_NULL, null=True, blank=True, related_name='pedidos_directos')
     mesa = models.ForeignKey('reservas.Mesa', on_delete=models.SET_NULL, null=True, blank=True, related_name='pedidos_directos')
     usuario = models.ForeignKey('usuarios.Usuario', on_delete=models.CASCADE, related_name='pedidos')
+    promocion = models.ForeignKey('promocion.Promocion', on_delete=models.SET_NULL, null=True, blank=True, related_name='pedidos')
+    descuento = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     total = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     notas = models.TextField(blank=True, null=True)
     estado = models.CharField(max_length=20, choices=ESTADOS_PEDIDO, default='pendiente')
