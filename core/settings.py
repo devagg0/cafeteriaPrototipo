@@ -33,7 +33,6 @@ INSTALLED_APPS = [
     'producto',
     'pedidos',  
     'finanzas',
-    'promocion',
     'corsheaders',
 ]
 

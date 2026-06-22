@@ -7,7 +7,6 @@ from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.permissions import BasePermission
 from rest_framework.views import APIView
 from django.db import transaction
-from decimal import Decimal
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 
@@ -130,59 +129,6 @@ class IsAuthenticatedJWT(BasePermission):
         return bool(request.user)
 
 
-def calcular_descuento_pedido(pedido, promocion):
-    if not promocion or not promocion.activa:
-        return Decimal('0.00')
-
-    from django.utils import timezone
-    hoy = timezone.localdate()
-    if not (promocion.fecha_inicio <= hoy <= promocion.fecha_fin):
-        return Decimal('0.00')
-
-    detalles = pedido.detalles.all()
-    tiene_productos = promocion.productos.exists()
-    tiene_categorias = promocion.categorias.exists()
-
-    productos_aplicables = []
-    for det in detalles:
-        producto = det.producto
-        es_aplicable = False
-        
-        if not tiene_productos and not tiene_categorias:
-            es_aplicable = True
-        else:
-            if tiene_productos and promocion.productos.filter(id=producto.id).exists():
-                es_aplicable = True
-            if tiene_categorias and producto.categoria and promocion.categorias.filter(id=producto.categoria.id).exists():
-                es_aplicable = True
-                
-        if es_aplicable:
-            productos_aplicables.append(det)
-
-    if not productos_aplicables:
-        return Decimal('0.00')
-
-    base_descuento = sum(det.subtotal for det in productos_aplicables)
-
-    if promocion.tipo_descuento == 'porcentaje':
-        descuento = base_descuento * (promocion.valor_descuento / Decimal('100.00'))
-    elif promocion.tipo_descuento == 'monto_fijo':
-        descuento = min(promocion.valor_descuento, base_descuento)
-    else:
-        descuento = Decimal('0.00')
-
-    return Decimal(descuento).quantize(Decimal('0.01'))
-
-
-def recalcular_totales_pedido(pedido):
-    subtotal = sum(d.subtotal for d in pedido.detalles.all())
-    if pedido.promocion:
-        pedido.descuento = calcular_descuento_pedido(pedido, pedido.promocion)
-    else:
-        pedido.descuento = Decimal('0.00')
-    pedido.total = max(Decimal('0.00'), subtotal - pedido.descuento)
-    pedido.save()
-
 
 # ---------------------------------------------------------------------------
 # PedidoViewSet
@@ -203,9 +149,6 @@ class PedidoViewSet(viewsets.ModelViewSet):
 
         if self.action == 'cancelar_pedido':
                     return [IsMeseroOrAdmin()]
-
-        if self.action in ['aplicar_promocion', 'quitar_promocion']:
-            return [IsMeseroOrAdmin()]
 
         return [IsEmpleadoOrAdmin()]
 
@@ -424,134 +367,6 @@ class PedidoViewSet(viewsets.ModelViewSet):
             'mensaje': 'Pedido cancelado correctamente.',
             'pedido': serializer.data
         }, status=status.HTTP_200_OK)
-
-    @action(detail=True, methods=['post'], url_path='aplicar-promocion')
-    def aplicar_promocion(self, request, pk=None):
-        pedido = self.get_object()
-
-        if request.user.cod_rol.cod_rol not in ['admin', 'mesero']:
-            return Response(
-                {'error': 'Solo el mesero o el administrador pueden aplicar promociones.'},
-                status=status.HTTP_403_FORBIDDEN
-            )
-
-        if pedido.estado == 'cancelado':
-            return Response(
-                {'error': 'No se puede aplicar una promoción a un pedido cancelado.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        from finanzas.models import Pago
-        if Pago.objects.filter(pedido=pedido, estado='exitoso').exists():
-            return Response(
-                {'error': 'No se puede aplicar una promoción a un pedido que ya está pagado.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        codigo = request.data.get('codigo')
-        if not codigo:
-            return Response(
-                {'error': 'El código de promoción es requerido.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        from promocion.models import Promocion
-        try:
-            promocion = Promocion.objects.get(codigo__iexact=codigo.strip())
-        except Promocion.DoesNotExist:
-            return Response(
-                {'error': 'La promoción especificada no existe.'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-
-        if not promocion.activa:
-            return Response(
-                {'error': 'La promoción no está activa.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        from django.utils import timezone
-        hoy = timezone.localdate()
-        if not (promocion.fecha_inicio <= hoy <= promocion.fecha_fin):
-            return Response(
-                {'error': 'La promoción no está vigente para la fecha actual.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        detalles = pedido.detalles.all()
-        tiene_productos = promocion.productos.exists()
-        tiene_categorias = promocion.categorias.exists()
-
-        aplica = False
-        if not tiene_productos and not tiene_categorias:
-            aplica = True
-        else:
-            for det in detalles:
-                producto = det.producto
-                if tiene_productos and promocion.productos.filter(id=producto.id).exists():
-                    aplica = True
-                    break
-                if tiene_categorias and producto.categoria and promocion.categorias.filter(id=producto.categoria.id).exists():
-                    aplica = True
-                    break
-
-        if not aplica:
-            return Response(
-                {'error': 'La promoción no es aplicable a ningún producto de este pedido.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        with transaction.atomic():
-            pedido = Pedido.objects.select_for_update().get(id=pedido.id)
-            pedido.promocion = promocion
-            recalcular_totales_pedido(pedido)
-
-            Bitacora.objects.create(
-                usuario=request.user,
-                accion='aplicar promocion pedido',
-                detalles=f'Promoción {promocion.codigo} aplicada a pedido {pedido.id}'
-            )
-
-        serializer = self.get_serializer(pedido)
-        return Response(serializer.data, status=status.HTTP_200_OK)
-
-    @action(detail=True, methods=['post'], url_path='quitar-promocion')
-    def quitar_promocion(self, request, pk=None):
-        pedido = self.get_object()
-
-        if request.user.cod_rol.cod_rol not in ['admin', 'mesero']:
-            return Response(
-                {'error': 'Solo el mesero o el administrador pueden quitar promociones.'},
-                status=status.HTTP_403_FORBIDDEN
-            )
-
-        from finanzas.models import Pago
-        if Pago.objects.filter(pedido=pedido, estado='exitoso').exists():
-            return Response(
-                {'error': 'No se puede modificar un pedido que ya está pagado.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        if pedido.estado == 'cancelado':
-            return Response(
-                {'error': 'No se puede modificar un pedido cancelado.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        with transaction.atomic():
-            pedido = Pedido.objects.select_for_update().get(id=pedido.id)
-            pedido.promocion = None
-            pedido.descuento = 0.00
-            recalcular_totales_pedido(pedido)
-
-            Bitacora.objects.create(
-                usuario=request.user,
-                accion='quitar promocion pedido',
-                detalles=f'Promoción removida del pedido {pedido.id}'
-            )
-
-        serializer = self.get_serializer(pedido)
-        return Response(serializer.data, status=status.HTTP_200_OK)
 
 # ---------------------------------------------------------------------------
 # PreordenViewSet
@@ -989,8 +804,9 @@ class AgregarDetallePedidoView(APIView):
                     observaciones=observaciones
                 )
 
-            # Update order total and discount
-            recalcular_totales_pedido(pedido)
+            # Update order total
+            pedido.total = sum(d.subtotal for d in pedido.detalles.all())
+            pedido.save()
 
             serializer = PedidoSerializer(pedido, context={'request': request})
             return Response(serializer.data, status=status.HTTP_200_OK)
@@ -1038,8 +854,9 @@ class ActualizarEliminarDetallePedidoView(APIView):
 
             detalle.save()
 
-            # Update order total and discount
-            recalcular_totales_pedido(pedido)
+            # Update order total
+            pedido.total = sum(d.subtotal for d in pedido.detalles.all())
+            pedido.save()
 
             serializer = PedidoSerializer(pedido, context={'request': request})
             return Response(serializer.data, status=status.HTTP_200_OK)
@@ -1063,8 +880,9 @@ class ActualizarEliminarDetallePedidoView(APIView):
             # Delete detail
             detalle.delete()
 
-            # Update order total and discount
-            recalcular_totales_pedido(pedido)
+            # Update order total
+            pedido.total = sum(d.subtotal for d in pedido.detalles.all())
+            pedido.save()
 
             serializer = PedidoSerializer(pedido, context={'request': request})
             return Response(serializer.data, status=status.HTTP_200_OK)
@@ -1196,8 +1014,8 @@ class ResumenPagoView(APIView):
         # Calculate totals
         total = pedido.total
         total_confirmado = sum(d.subtotal for d in pedido.detalles.filter(confirmado=True))
-        total_pagado = Pago.objects.filter(pedido=pedido, estado='exitoso').aggregate(Sum('monto'))['monto__sum'] or Decimal('0.00')
-        total_pendiente = max(Decimal('0.00'), total_confirmado - pedido.descuento - total_pagado)
+        total_pagado = Pago.objects.filter(pedido=pedido, estado='exitoso').aggregate(Sum('monto'))['monto__sum'] or 0.00
+        total_pendiente = max(0.00, float(total_confirmado) - float(total_pagado))
 
         productos_confirmados = DetallePedidoSerializer(pedido.detalles.filter(confirmado=True), many=True).data
         productos_pendientes = DetallePedidoSerializer(pedido.detalles.filter(confirmado=False), many=True).data
@@ -1213,7 +1031,7 @@ class ResumenPagoView(APIView):
         elif has_pending:
             puede_pagar = False
             motivo_bloqueo_pago = "Confirma los productos pendientes antes de realizar el pago"
-        elif total_pendiente <= Decimal('0.00'):
+        elif total_pendiente <= 0:
             puede_pagar = False
             motivo_bloqueo_pago = "El pedido ya está totalmente pagado"
 
@@ -1222,7 +1040,7 @@ class ResumenPagoView(APIView):
             "mesa": pedido.mesa.nombre if pedido.mesa else None,
             "sala": pedido.sala.nombre if pedido.sala else (pedido.mesa.sala.nombre if pedido.mesa else None),
             "estado_pedido": pedido.estado,
-            "estado_pago": "PAGADO" if total_pendiente <= Decimal('0.00') and not has_pending and len(pedido.detalles.all()) > 0 else "PENDIENTE",
+            "estado_pago": "PAGADO" if total_pendiente <= 0 and not has_pending and len(pedido.detalles.all()) > 0 else "PENDIENTE",
             "total": f"{total:.2f}",
             "total_pagado": f"{total_pagado:.2f}",
             "total_pendiente": f"{total_pendiente:.2f}",
@@ -1254,10 +1072,10 @@ class PagarEfectivoView(APIView):
             
             # Recalculate total_pendiente to prevent race conditions
             total_confirmado = sum(d.subtotal for d in pedido.detalles.filter(confirmado=True))
-            total_pagado = Pago.objects.filter(pedido=pedido, estado='exitoso').aggregate(Sum('monto'))['monto__sum'] or Decimal('0.00')
-            total_pendiente = max(Decimal('0.00'), total_confirmado - pedido.descuento - total_pagado)
+            total_pagado = Pago.objects.filter(pedido=pedido, estado='exitoso').aggregate(Sum('monto'))['monto__sum'] or 0.00
+            total_pendiente = max(0.00, float(total_confirmado) - float(total_pagado))
 
-            if total_pendiente <= Decimal('0.00'):
+            if total_pendiente <= 0:
                 return Response({'error': 'El pedido ya está totalmente pagado'}, status=status.HTTP_400_BAD_REQUEST)
 
             # Create Pago
