@@ -27,6 +27,8 @@ class Pago(models.Model):
     stripe_session_id = models.CharField(max_length=255, blank=True, null=True)
     stripe_payment_intent = models.CharField(max_length=255, blank=True, null=True)
     usuario = models.ForeignKey('usuarios.Usuario', on_delete=models.SET_NULL, null=True, blank=True, related_name='pagos_procesados')
+    caja_cerrada = models.BooleanField(default=False)
+    caja_cerrada_en = models.DateTimeField(blank=True, null=True)
     
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

@@ -1,10 +1,14 @@
 import stripe
 import os
+from datetime import datetime, time
 from django.conf import settings
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from django.db import transaction
+from django.db.utils import OperationalError, ProgrammingError
+from django.db.models import Count, Sum
+from django.utils.dateparse import parse_date
 from django.utils import timezone
 from reservas.models import Reserva, SalaTematica, Mesa
 from pedidos.models import Preorden, DetallePreorden, Pedido, DetallePedido
@@ -29,6 +33,15 @@ class IsEmpleadoAtencionOrAdmin(BasePermission):
             hasattr(request.user, 'cod_rol') and
             request.user.cod_rol and
             request.user.cod_rol.cod_rol in ['admin', 'mesero', 'cocinero', 'emp']
+        )
+
+class IsAdminUser(BasePermission):
+    def has_permission(self, request, view):
+        return bool(
+            request.user and
+            hasattr(request.user, 'cod_rol') and
+            request.user.cod_rol and
+            request.user.cod_rol.cod_rol == 'admin'
         )
 
 def _nombre_usuario(usuario):
@@ -97,6 +110,131 @@ def obtener_url_retorno_cliente(request, path, env_name, default_base):
     if frontend_origin and frontend_origin.startswith(('http://', 'https://')):
         return f"{frontend_origin.rstrip('/')}{path}"
     return os.getenv(env_name, f"{default_base}{path}")
+
+def _fecha_o_hoy(valor):
+    if not valor:
+        return timezone.localdate()
+    fecha = parse_date(valor)
+    if not fecha:
+        raise ValueError('Formato de fecha invalido. Use YYYY-MM-DD.')
+    return fecha
+
+def _periodo_cierre(params):
+    fecha_inicio = params.get('fecha_inicio')
+    fecha_fin = params.get('fecha_fin')
+    fecha = params.get('fecha')
+
+    if fecha_inicio or fecha_fin:
+        inicio = _fecha_o_hoy(fecha_inicio)
+        fin = _fecha_o_hoy(fecha_fin or fecha_inicio)
+    else:
+        inicio = _fecha_o_hoy(fecha)
+        fin = inicio
+
+    if inicio > fin:
+        raise ValueError('La fecha de inicio no puede ser mayor a la fecha fin.')
+
+    return inicio, fin
+
+def _query_pagos_cierre(inicio, fin):
+    inicio_dt = timezone.make_aware(datetime.combine(inicio, time.min))
+    fin_dt = timezone.make_aware(datetime.combine(fin, time.max))
+
+    return Pago.objects.filter(
+        estado='exitoso',
+        updated_at__gte=inicio_dt,
+        updated_at__lte=fin_dt,
+    ).defer(
+        'caja_cerrada',
+        'caja_cerrada_en',
+    ).select_related(
+        'usuario',
+        'pedido',
+        'pedido__mesa',
+        'pedido__sala',
+        'preorden',
+        'preorden__cliente',
+        'preorden__cliente__id_usuario',
+        'preorden__mesa',
+        'preorden__sala',
+        'reserva',
+        'reserva__cliente',
+        'reserva__cliente__id_usuario',
+        'reserva__mesa',
+        'reserva__sala',
+    ).order_by('updated_at', 'id')
+
+def _tipo_comprobante(pago):
+    if pago.preorden:
+        return 'Preorden'
+    if pago.reserva:
+        return 'Reserva en linea'
+    if pago.pedido and pago.pedido.reserva_id:
+        return 'Pedido de reserva'
+    return 'Pedido presencial'
+
+def _detalle_cierre(pago):
+    nota = construir_nota_venta(pago)
+    fecha_hora = timezone.localtime(pago.updated_at)
+    cliente_o_mesero = nota.get('cliente') or nota.get('mesero') or 'No registrado'
+    try:
+        caja_cerrada = pago.caja_cerrada
+    except (OperationalError, ProgrammingError):
+        caja_cerrada = False
+
+    return {
+        'id_pago': pago.id,
+        'numero_comprobante': nota['numeroComprobante'],
+        'fecha': fecha_hora.strftime('%Y-%m-%d'),
+        'hora': fecha_hora.strftime('%H:%M'),
+        'mesa': nota['mesa'],
+        'sala': nota['sala'],
+        'cliente_mesero': cliente_o_mesero,
+        'tipo': _tipo_comprobante(pago),
+        'metodo_pago': pago.get_metodo_pago_display(),
+        'metodo_pago_codigo': pago.metodo_pago,
+        'total': f'{float(pago.monto):.2f}',
+        'caja_cerrada': caja_cerrada,
+    }
+
+def construir_cierre_caja(inicio, fin):
+    pagos = _query_pagos_cierre(inicio, fin)
+    agregados = pagos.values('metodo_pago').annotate(
+        total=Sum('monto'),
+        cantidad=Count('id'),
+    )
+
+    metodos_base = {
+        'efectivo': {'metodo': 'Efectivo', 'total': '0.00', 'cantidad': 0},
+        'qr': {'metodo': 'QR', 'total': '0.00', 'cantidad': 0},
+        'stripe': {'metodo': 'Tarjeta/Stripe', 'total': '0.00', 'cantidad': 0},
+    }
+
+    for item in agregados:
+        codigo = item['metodo_pago']
+        metodos_base[codigo] = {
+            'metodo': metodos_base.get(codigo, {}).get('metodo', codigo.title()),
+            'total': f'{float(item["total"] or 0):.2f}',
+            'cantidad': item['cantidad'],
+        }
+
+    total_general = pagos.aggregate(total=Sum('monto'))['total'] or 0
+    cantidad_total = pagos.count()
+
+    try:
+        caja_cerrada = cantidad_total > 0 and not pagos.filter(caja_cerrada=False).exists()
+    except (OperationalError, ProgrammingError):
+        caja_cerrada = False
+
+    return {
+        'fecha_inicio': inicio.isoformat(),
+        'fecha_fin': fin.isoformat(),
+        'total_general': f'{float(total_general):.2f}',
+        'cantidad_comprobantes': cantidad_total,
+        'por_metodo': list(metodos_base.values()),
+        'comprobantes': [_detalle_cierre(pago) for pago in pagos],
+        'caja_cerrada': caja_cerrada,
+    }
 
 class CrearSesionReservaView(APIView):
     authentication_classes = [JWTAuthentication]
@@ -744,6 +882,41 @@ class NotaVentaPedidoView(APIView):
             return Response({'error': 'No existe un pago confirmado para este pedido'}, status=status.HTTP_404_NOT_FOUND)
 
         return Response({'nota_venta': construir_nota_venta(pago)}, status=status.HTTP_200_OK)
+
+class CierreCajaView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        try:
+            inicio, fin = _periodo_cierre(request.query_params)
+            return Response(construir_cierre_caja(inicio, fin), status=status.HTTP_200_OK)
+        except ValueError as exc:
+            return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+class CerrarCajaView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAdminUser]
+
+    def post(self, request):
+        try:
+            inicio, fin = _periodo_cierre(request.data)
+            with transaction.atomic():
+                pagos = _query_pagos_cierre(inicio, fin).select_for_update()
+                total = pagos.count()
+                actualizados = pagos.filter(caja_cerrada=False).update(
+                    caja_cerrada=True,
+                    caja_cerrada_en=timezone.now(),
+                )
+
+            return Response({
+                'mensaje': 'Caja cerrada correctamente',
+                'comprobantes_periodo': total,
+                'comprobantes_cerrados': actualizados,
+                'cierre': construir_cierre_caja(inicio, fin),
+            }, status=status.HTTP_200_OK)
+        except ValueError as exc:
+            return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
 class CancelarPagoPedidoView(APIView):
     authentication_classes = [JWTAuthentication]
