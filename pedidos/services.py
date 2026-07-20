@@ -150,6 +150,7 @@ def convertir_preorden_a_pedido_por_checkin(reserva, usuario):
             cantidad=detalle.cantidad,
             precio_unitario=detalle.precio_unitario,
             subtotal=detalle.subtotal,
+            observaciones=detalle.observaciones,
         )
         p = detalle.producto
         p.stock -= detalle.cantidad

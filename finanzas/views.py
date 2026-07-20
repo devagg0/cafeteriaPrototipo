@@ -5,17 +5,19 @@ from django.conf import settings
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from django.db import transaction
+from django.db import transaction, IntegrityError
 from django.db.utils import OperationalError, ProgrammingError
-from django.db.models import Count, Sum
+from django.db.models import Count, Sum, Avg
 from django.utils.dateparse import parse_date
 from django.utils import timezone
 from reservas.models import Reserva, SalaTematica, Mesa
 from pedidos.models import Preorden, DetallePreorden, Pedido, DetallePedido
 from producto.models import Producto
 from usuarios.models import Cliente, Bitacora, Usuario
-from .models import Pago
+from pedidos.historial.views import pedido_pertenece_al_usuario
+from .models import Pago, Opinion
 from .reportes import interpretar_reporte_voz, reporte_dinamico, reporte_estatico
+from .serializers import OpinionSerializer
 from reservas.views import JWTAuthentication, IsAuthenticatedJWT, IsEmpleadoOrAdmin
 from rest_framework.permissions import BasePermission
 
@@ -44,18 +46,26 @@ class IsAdminUser(BasePermission):
             request.user.cod_rol.cod_rol == 'admin'
         )
 
+
+def limpiar_observaciones_pedido(valor):
+    texto = (valor or '').strip()
+    if len(texto) > 50:
+        raise ValueError('La personalización no puede superar los 50 caracteres.')
+    return texto
+
 def _nombre_usuario(usuario):
     return getattr(usuario, 'nombre', None) or 'No registrado'
 
 def _formatear_fecha_hora(dt):
     return timezone.localtime(dt).strftime('%d/%m/%Y %H:%M') if dt else timezone.localtime().strftime('%d/%m/%Y %H:%M')
 
-def _producto_nota(cantidad, nombre, precio, total):
+def _producto_nota(cantidad, nombre, precio, total, observaciones=''):
     return {
         'cantidad': cantidad,
         'producto': nombre,
         'precio': f'{float(precio):.2f}',
         'total': f'{float(total):.2f}',
+        'observaciones': observaciones or '',
     }
 
 def construir_nota_venta(pago):
@@ -74,7 +84,7 @@ def construir_nota_venta(pago):
         sala = pedido.sala.nombre if pedido.sala else (pedido.mesa.sala.nombre if pedido.mesa else None)
         mesero = _nombre_usuario(pago.usuario or pedido.usuario)
         for det in pedido.detalles.filter(confirmado=True):
-            productos.append(_producto_nota(det.cantidad, det.producto.nombre, det.precio_unitario, det.subtotal))
+            productos.append(_producto_nota(det.cantidad, det.producto.nombre, det.precio_unitario, det.subtotal, det.observaciones))
     elif preorden:
         mesa = preorden.mesa.nombre if preorden.mesa else None
         sala = preorden.sala.nombre if preorden.sala else (preorden.reserva.sala.nombre if preorden.reserva else None)
@@ -82,7 +92,7 @@ def construir_nota_venta(pago):
         cliente = _nombre_usuario(cliente_preorden.id_usuario) if cliente_preorden else None
         mesero = _nombre_usuario(preorden.usuario_mesero) if preorden.usuario_mesero else 'Reserva en línea'
         for det in preorden.detalles.all():
-            productos.append(_producto_nota(det.cantidad, det.producto.nombre, det.precio_unitario, det.subtotal))
+            productos.append(_producto_nota(det.cantidad, det.producto.nombre, det.precio_unitario, det.subtotal, det.observaciones))
     elif reserva:
         mesa = reserva.mesa.nombre if reserva.mesa else None
         sala = reserva.sala.nombre if reserva.sala else None
@@ -236,6 +246,130 @@ def construir_cierre_caja(inicio, fin):
         'caja_cerrada': caja_cerrada,
     }
 
+class IsAdmin(BasePermission):
+    def has_permission(self, request, view):
+        return bool(request.user and getattr(getattr(request.user, 'cod_rol', None), 'cod_rol', None) == 'admin')
+
+
+def rol_usuario(usuario):
+    return getattr(getattr(usuario, 'cod_rol', None), 'cod_rol', None)
+
+
+class OpinionesView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticatedJWT]
+
+    def get_queryset(self, request):
+        rol = rol_usuario(request.user)
+        qs = Opinion.objects.select_related('usuario', 'pedido')
+        if rol == 'admin':
+            return qs
+        if request.query_params.get('mias') == '1':
+            return qs.filter(usuario=request.user)
+        if rol in ['mesero', 'emp', 'cocinero']:
+            return qs.filter(visible=True)
+        return qs.filter(visible=True)
+
+    def get(self, request):
+        qs = self.get_queryset(request)
+        serializer = OpinionSerializer(qs[:100], many=True)
+        resumen = qs.filter(visible=True).aggregate(
+            promedio=Avg('calificacion'),
+            total=Count('id'),
+        )
+        return Response({
+            'results': serializer.data,
+            'resumen': {
+                'promedio': round(float(resumen['promedio'] or 0), 1),
+                'total': resumen['total'] or 0,
+            },
+        })
+
+    def post(self, request):
+        if rol_usuario(request.user) != 'cliente':
+            return Response(
+                {'error': 'Solo los clientes pueden registrar opiniones.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        hoy = timezone.localdate()
+        if Opinion.objects.filter(usuario=request.user, fecha=hoy).exists():
+            return Response(
+                {'error': 'Solo puedes registrar una opinión por día.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        data = request.data.copy()
+        pedido_id = data.get('pedido')
+        pedido = None
+        if pedido_id:
+            try:
+                pedido = Pedido.objects.get(id=pedido_id)
+            except Pedido.DoesNotExist:
+                return Response({'error': 'El pedido indicado no existe.'}, status=status.HTTP_404_NOT_FOUND)
+            if not pedido_pertenece_al_usuario(pedido, request.user):
+                return Response({'error': 'No puedes opinar sobre un pedido que no te pertenece.'}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = OpinionSerializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            opinion = serializer.save(usuario=request.user, pedido=pedido, fecha=hoy)
+        except IntegrityError:
+            return Response(
+                {'error': 'Solo puedes registrar una opinión por día.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            Bitacora.objects.create(
+                usuario=request.user,
+                accion='crear opinion',
+                detalles=f'Opinión #{opinion.id} registrada con {opinion.calificacion} estrellas.',
+            )
+        except Exception:
+            pass
+
+        return Response(OpinionSerializer(opinion).data, status=status.HTTP_201_CREATED)
+
+
+class MisOpinionesView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticatedJWT]
+
+    def get(self, request):
+        opiniones = Opinion.objects.select_related('usuario', 'pedido').filter(usuario=request.user)
+        hoy = timezone.localdate()
+        return Response({
+            'results': OpinionSerializer(opiniones, many=True).data,
+            'puede_opinar_hoy': not opiniones.filter(fecha=hoy).exists(),
+        })
+
+
+class OpinionVisibilidadView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAdmin]
+
+    def patch(self, request, pk):
+        try:
+            opinion = Opinion.objects.select_related('usuario').get(id=pk)
+        except Opinion.DoesNotExist:
+            return Response({'error': 'Opinión no encontrada.'}, status=status.HTTP_404_NOT_FOUND)
+
+        opinion.visible = bool(request.data.get('visible', not opinion.visible))
+        opinion.save(update_fields=['visible', 'updated_at'])
+
+        try:
+            Bitacora.objects.create(
+                usuario=request.user,
+                accion='actualizar visibilidad opinion',
+                detalles=f'Opinión #{opinion.id} visible={opinion.visible}.',
+            )
+        except Exception:
+            pass
+
+        return Response(OpinionSerializer(opinion).data)
+
+
 class CrearSesionReservaView(APIView):
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticatedJWT]
@@ -321,6 +455,10 @@ class CrearSesionReservaView(APIView):
                 return Response({'error': f'Producto con id {prod.get("id")} no encontrado'}, status=status.HTTP_400_BAD_REQUEST)
             
             cantidad = int(prod.get('cantidad', 0))
+            try:
+                observaciones = limpiar_observaciones_pedido(prod.get('observaciones'))
+            except ValueError as exc:
+                return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
             if cantidad <= 0:
                 return Response({'error': 'La cantidad debe ser mayor a 0'}, status=status.HTTP_400_BAD_REQUEST)
             if cantidad > producto.stock:
@@ -336,6 +474,7 @@ class CrearSesionReservaView(APIView):
                 'cantidad': cantidad,
                 'precio_unitario': producto.precio,
                 'subtotal': subtotal,
+                'observaciones': observaciones,
             })
 
         try:
@@ -368,6 +507,7 @@ class CrearSesionReservaView(APIView):
                         cantidad=d['cantidad'],
                         precio_unitario=d['precio_unitario'],
                         subtotal=d['subtotal'],
+                        observaciones=d['observaciones'],
                     )
 
                 pago = Pago.objects.create(
@@ -600,6 +740,7 @@ class IniciarPagoPedidoView(APIView):
                             raise ValueError(f'Producto id={prod_data.get("id")} no encontrado')
 
                         cantidad = int(prod_data.get('cantidad', 0))
+                        observaciones = limpiar_observaciones_pedido(prod_data.get('observaciones'))
                         if cantidad <= 0:
                             raise ValueError('La cantidad debe ser mayor a 0')
                         if producto.stock < cantidad:
@@ -615,6 +756,7 @@ class IniciarPagoPedidoView(APIView):
                             'cantidad': cantidad,
                             'precio_unitario': producto.precio,
                             'subtotal': subtotal,
+                            'observaciones': observaciones,
                         })
 
                     pedido = Pedido.objects.create(
@@ -632,6 +774,7 @@ class IniciarPagoPedidoView(APIView):
                             cantidad=d['cantidad'],
                             precio_unitario=d['precio_unitario'],
                             subtotal=d['subtotal'],
+                            observaciones=d['observaciones'],
                         )
                         p = d['producto']
                         p.stock -= d['cantidad']

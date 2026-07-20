@@ -1,6 +1,45 @@
 from django.db import models
+from django.db.models import Q
+from django.utils import timezone
 from reservas.models import Reserva
 from pedidos.models import Pedido, Preorden
+
+class Opinion(models.Model):
+    usuario = models.ForeignKey(
+        'usuarios.Usuario',
+        on_delete=models.CASCADE,
+        related_name='opiniones',
+    )
+    pedido = models.ForeignKey(
+        'pedidos.Pedido',
+        on_delete=models.SET_NULL,
+        related_name='opiniones',
+        null=True,
+        blank=True,
+    )
+    calificacion = models.PositiveSmallIntegerField()
+    comentario = models.CharField(max_length=500, blank=True)
+    fecha = models.DateField(default=timezone.localdate)
+    visible = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'opinion'
+        ordering = ['-created_at']
+        constraints = [
+            models.CheckConstraint(
+                check=Q(calificacion__gte=1) & Q(calificacion__lte=5),
+                name='opinion_calificacion_1_5',
+            ),
+            models.UniqueConstraint(
+                fields=['usuario', 'fecha'],
+                name='opinion_unica_usuario_fecha',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.usuario.nombre} - {self.calificacion} estrellas'
 
 class Pago(models.Model):
     METODO_PAGO_CHOICES = [

@@ -148,6 +148,7 @@ class PedidoEditarView(APIView):
                 return Response({'error': motivo}, status=status.HTTP_400_BAD_REQUEST)
 
             cantidades = {}
+            observaciones_por_producto = {}
             for item in productos_req:
                 try:
                     producto_id = int(item.get('id'))
@@ -156,7 +157,12 @@ class PedidoEditarView(APIView):
                     return Response({'error': 'Productos invalidos.'}, status=status.HTTP_400_BAD_REQUEST)
                 if cantidad <= 0:
                     return Response({'error': 'Las cantidades deben ser mayores a 0.'}, status=status.HTTP_400_BAD_REQUEST)
+                observaciones = (item.get('observaciones') or '').strip()
+                if len(observaciones) > 50:
+                    return Response({'error': 'La personalización no puede superar los 50 caracteres.'}, status=status.HTTP_400_BAD_REQUEST)
                 cantidades[producto_id] = cantidades.get(producto_id, 0) + cantidad
+                if observaciones:
+                    observaciones_por_producto[producto_id] = observaciones
 
             detalles_actuales = list(pedido.detalles.select_related('producto').all())
             cantidad_anterior = {}
@@ -195,6 +201,7 @@ class PedidoEditarView(APIView):
                     cantidad=cantidad,
                     precio_unitario=producto.precio,
                     subtotal=subtotal,
+                    observaciones=observaciones_por_producto.get(producto_id, ''),
                 )
                 producto.stock -= cantidad
                 producto.save()

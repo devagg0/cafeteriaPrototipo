@@ -12,9 +12,15 @@ from .views import (
     ReporteEstaticoView,
     ReporteDinamicoView,
     ReporteVozView,
+    OpinionesView,
+    MisOpinionesView,
+    OpinionVisibilidadView,
 )
 
 urlpatterns = [
+    path('opiniones/', OpinionesView.as_view(), name='opiniones'),
+    path('opiniones/mias/', MisOpinionesView.as_view(), name='mis-opiniones'),
+    path('opiniones/<int:pk>/visibilidad/', OpinionVisibilidadView.as_view(), name='opinion-visibilidad'),
     path('finanzas/crear-sesion-reserva/', CrearSesionReservaView.as_view(), name='crear-sesion-reserva'),
     path('finanzas/iniciar-pago-pedido/', IniciarPagoPedidoView.as_view(), name='iniciar-pago-pedido'),
     path('finanzas/confirmar-pago-stripe/', ConfirmarPagoStripeView.as_view(), name='confirmar-pago-stripe'),

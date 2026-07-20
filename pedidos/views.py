@@ -41,6 +41,13 @@ def datos_cliente_presencial(data):
     return None, nombre_cliente or 'Cliente presencial'
 
 
+def limpiar_observaciones(valor):
+    texto = (valor or '').strip()
+    if len(texto) > 50:
+        raise ValueError('La personalización no puede superar los 50 caracteres.')
+    return texto
+
+
 def serializar_notificacion(notificacion):
     pedido = notificacion.pedido
     return {
@@ -223,6 +230,7 @@ class PedidoViewSet(viewsets.ModelViewSet):
                         raise ValueError(f'Producto id={prod_data.get("id")} no encontrado')
 
                     cantidad = int(prod_data.get('cantidad', 0))
+                    observaciones = limpiar_observaciones(prod_data.get('observaciones'))
                     if cantidad <= 0:
                         raise ValueError('La cantidad debe ser mayor a 0')
                     if producto.stock < cantidad:
@@ -238,6 +246,7 @@ class PedidoViewSet(viewsets.ModelViewSet):
                         'cantidad': cantidad,
                         'precio_unitario': producto.precio,
                         'subtotal': subtotal,
+                        'observaciones': observaciones,
                     })
 
                 pedido = Pedido.objects.create(
@@ -257,6 +266,7 @@ class PedidoViewSet(viewsets.ModelViewSet):
                         cantidad=d['cantidad'],
                         precio_unitario=d['precio_unitario'],
                         subtotal=d['subtotal'],
+                        observaciones=d['observaciones'],
                     )
                     p = d['producto']
                     p.stock -= d['cantidad']
@@ -580,6 +590,10 @@ class PreordenViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             cantidad = int(prod_data.get('cantidad', 0))
+            try:
+                observaciones = limpiar_observaciones(prod_data.get('observaciones'))
+            except ValueError as exc:
+                return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
             if cantidad <= 0:
                 return Response(
                     {'error': 'La cantidad debe ser mayor a 0'},
@@ -598,6 +612,7 @@ class PreordenViewSet(viewsets.ModelViewSet):
                 'cantidad': cantidad,
                 'precio_unitario': producto.precio,
                 'subtotal': subtotal,
+                'observaciones': observaciones,
             })
 
         preorden = Preorden.objects.create(
@@ -616,6 +631,7 @@ class PreordenViewSet(viewsets.ModelViewSet):
                 cantidad=d['cantidad'],
                 precio_unitario=d['precio_unitario'],
                 subtotal=d['subtotal'],
+                observaciones=d['observaciones'],
             )
 
         Bitacora.objects.create(
@@ -868,7 +884,10 @@ class AgregarDetallePedidoView(APIView):
 
         producto_id = request.data.get('producto_id')
         cantidad = int(request.data.get('cantidad', 1))
-        observaciones = request.data.get('observaciones', '')
+        try:
+            observaciones = limpiar_observaciones(request.data.get('observaciones', ''))
+        except ValueError as exc:
+            return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         if cantidad <= 0:
             return Response({'error': 'La cantidad debe ser mayor a 0'}, status=status.HTTP_400_BAD_REQUEST)
@@ -892,7 +911,7 @@ class AgregarDetallePedidoView(APIView):
                 detalle.cantidad += cantidad
                 detalle.subtotal = detalle.cantidad * detalle.precio_unitario
                 if observaciones:
-                    detalle.observaciones = (detalle.observaciones or '') + '\n' + observaciones
+                    detalle.observaciones = observaciones
                 detalle.save()
             else:
                 detalle = DetallePedido.objects.create(
@@ -921,7 +940,10 @@ class ActualizarEliminarDetallePedidoView(APIView):
 
         detalle = get_object_or_404(DetallePedido, id=detalle_id, pedido=pedido)
         nueva_cantidad = request.data.get('cantidad')
-        observaciones = request.data.get('observaciones')
+        try:
+            observaciones = limpiar_observaciones(request.data.get('observaciones')) if 'observaciones' in request.data else None
+        except ValueError as exc:
+            return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         with transaction.atomic():
             pedido = Pedido.objects.select_for_update().get(id=pedido_id)

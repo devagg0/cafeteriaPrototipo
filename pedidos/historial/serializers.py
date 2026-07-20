@@ -137,7 +137,7 @@ class HistorialDetalleSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = DetallePedido
-        fields = ('producto_id', 'producto', 'producto_categoria', 'cantidad', 'precio_unitario', 'subtotal', 'stock_disponible')
+        fields = ('producto_id', 'producto', 'producto_categoria', 'cantidad', 'precio_unitario', 'subtotal', 'observaciones', 'stock_disponible')
 
     def get_stock_disponible(self, obj):
         return obj.producto.stock + obj.cantidad

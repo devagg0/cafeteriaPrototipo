@@ -298,10 +298,51 @@ def reporte_estatico(params):
     }
 
 
+def _mapear_tipo_reporte(value):
+    texto = (value or '').strip().lower()
+    if not texto:
+        return 'ventas'
+    if any(palabra in texto for palabra in ['ingreso', 'ingresos', 'ingres', 'pago', 'cobro']):
+        return 'ingresos'
+    if 'reserv' in texto:
+        return 'reservas'
+    if 'preorden' in texto:
+        return 'preordenes'
+    if 'ocupacion' in texto or 'sala' in texto or 'mesa' in texto:
+        return 'ocupacion'
+    if 'inventario' in texto or 'stock' in texto or 'critico' in texto:
+        return 'inventario'
+    return 'ventas'
+
+
+def _mapear_agrupar_por(value, tipo):
+    texto = (value or '').strip().lower()
+    if not texto:
+        if tipo == 'ingresos':
+            return 'dia'
+        if tipo == 'reservas':
+            return 'estado'
+        return 'producto'
+
+    if any(palabra in texto for palabra in ['metodo', 'pago']):
+        return 'metodo'
+    if 'estado' in texto:
+        return 'estado'
+    if 'sala' in texto or 'ambiente' in texto:
+        return 'sala'
+    if 'producto' in texto or 'item' in texto:
+        return 'producto'
+    if 'stock' in texto:
+        return 'stock'
+    if 'dia' in texto or 'día' in texto or 'semana' in texto or 'mes' in texto:
+        return 'dia'
+    return 'producto' if tipo != 'ingresos' else 'dia'
+
+
 def reporte_dinamico(params):
     fecha_inicio, fecha_fin = parse_date_range(params)
-    tipo = (params.get('tipo') or 'ventas').lower()
-    agrupar_por = (params.get('agrupar_por') or '').lower()
+    tipo = _mapear_tipo_reporte(params.get('tipo'))
+    agrupar_por = _mapear_agrupar_por(params.get('agrupar_por'), tipo)
     umbral_stock = parse_positive_int(params.get('umbral_stock'), 5)
 
     handlers = {
