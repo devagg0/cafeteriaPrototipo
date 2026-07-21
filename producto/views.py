@@ -6,8 +6,8 @@ from rest_framework.permissions import BasePermission
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed
 
-from .models import Categoria, Producto
-from .serializers import CategoriaSerializer, ProductoSerializer
+from .models import Categoria, Combo, Producto
+from .serializers import CategoriaSerializer, ComboSerializer, ProductoSerializer
 from usuarios.models import Usuario
 from usuarios.views import decodificar_token
 
@@ -84,6 +84,23 @@ class ProductoViewSet(viewsets.ModelViewSet):
     def disponibles(self, request):
         """Productos con estado activo y stock > 0, y de categoría activa."""
         qs = Producto.objects.filter(estado=True, stock__gt=0, categoria__estado=True)
+        serializer = self.get_serializer(qs, many=True)
+        return Response(serializer.data)
+
+
+class ComboViewSet(viewsets.ModelViewSet):
+    queryset = Combo.objects.prefetch_related('detalles__producto').all()
+    serializer_class = ComboSerializer
+    authentication_classes = [JWTAuthentication]
+
+    def get_permissions(self):
+        if self.action in ['list', 'retrieve', 'activos']:
+            return [IsAuthenticatedJWT()]
+        return [IsAdmin()]
+
+    @action(detail=False, methods=['get'])
+    def activos(self, request):
+        qs = self.get_queryset().filter(estado=True)
         serializer = self.get_serializer(qs, many=True)
         return Response(serializer.data)
 

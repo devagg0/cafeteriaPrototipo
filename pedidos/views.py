@@ -1208,6 +1208,9 @@ class PagarEfectivoView(APIView):
                 estado='exitoso',
                 usuario=request.user
             )
+            from finanzas.views import confirmar_cupon_por_pago, registrar_puntos_por_pago
+            confirmar_cupon_por_pago(pago)
+            registrar_puntos_por_pago(pago)
 
             # Update pedido state
             pedido.estado = 'confirmado'

@@ -41,6 +41,80 @@ class Opinion(models.Model):
     def __str__(self):
         return f'{self.usuario.nombre} - {self.calificacion} estrellas'
 
+
+class Cupon(models.Model):
+    TIPOS_DESCUENTO = [
+        ('porcentaje', 'Porcentaje'),
+        ('monto_fijo', 'Monto fijo'),
+    ]
+    codigo = models.CharField(max_length=20, unique=True)
+    descripcion = models.CharField(max_length=200, blank=True)
+    tipo_descuento = models.CharField(max_length=15, choices=TIPOS_DESCUENTO)
+    valor_descuento = models.DecimalField(max_digits=10, decimal_places=2)
+    activo = models.BooleanField(default=True)
+    fecha_vencimiento = models.DateField(blank=True, null=True)
+    limite_usos = models.PositiveIntegerField(default=1)
+    usos_actuales = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'cupon'
+
+    @property
+    def disponible(self):
+        vencido = self.fecha_vencimiento and self.fecha_vencimiento < timezone.localdate()
+        return self.activo and not vencido and self.usos_actuales < self.limite_usos
+
+    def __str__(self):
+        return self.codigo
+
+
+class CuponUso(models.Model):
+    cupon = models.ForeignKey(Cupon, on_delete=models.CASCADE, related_name='usos')
+    usuario = models.ForeignKey('usuarios.Usuario', on_delete=models.SET_NULL, null=True, blank=True, related_name='cupones_usados')
+    pedido = models.ForeignKey('pedidos.Pedido', on_delete=models.SET_NULL, null=True, blank=True, related_name='cupones_usados')
+    pago = models.ForeignKey('finanzas.Pago', on_delete=models.SET_NULL, null=True, blank=True, related_name='cupones_usados')
+    monto_descuento = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    confirmado = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'cupon_uso'
+
+
+class ConfiguracionPuntos(models.Model):
+    puntos_por_bs = models.PositiveIntegerField(default=1)
+    activo = models.BooleanField(default=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'configuracion_puntos'
+
+    def __str__(self):
+        return f'{self.puntos_por_bs} punto(s) por Bs'
+
+
+class PuntoMovimiento(models.Model):
+    TIPOS = [
+        ('ganado', 'Ganado'),
+        ('usado', 'Usado'),
+        ('ajuste', 'Ajuste'),
+        ('devolucion', 'Devolucion'),
+    ]
+    usuario = models.ForeignKey('usuarios.Usuario', on_delete=models.CASCADE, related_name='movimientos_puntos')
+    pedido = models.ForeignKey('pedidos.Pedido', on_delete=models.SET_NULL, null=True, blank=True, related_name='movimientos_puntos')
+    producto = models.ForeignKey('producto.Producto', on_delete=models.SET_NULL, null=True, blank=True, related_name='canjes_puntos')
+    tipo = models.CharField(max_length=20, choices=TIPOS)
+    puntos = models.IntegerField()
+    saldo_resultante = models.IntegerField(default=0)
+    descripcion = models.CharField(max_length=200, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'punto_movimiento'
+        ordering = ['-created_at']
+
 class Pago(models.Model):
     METODO_PAGO_CHOICES = [
         ('stripe', 'Stripe'),

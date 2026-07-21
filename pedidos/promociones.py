@@ -38,12 +38,25 @@ def calcular_descuento_pedido(pedido, promocion=None):
     return descuento.quantize(Decimal('0.01'))
 
 
+def calcular_descuento_cupon(pedido, base):
+    cupon = getattr(pedido, 'cupon', None)
+    if not cupon or not cupon.disponible or base <= ZERO:
+        return ZERO
+    if cupon.tipo_descuento == 'porcentaje':
+        descuento = base * cupon.valor_descuento / Decimal('100')
+    else:
+        descuento = min(cupon.valor_descuento, base)
+    return descuento.quantize(Decimal('0.01'))
+
+
 def recalcular_totales_pedido(pedido, guardar=True):
     subtotal = sum(
         (detalle.subtotal for detalle in pedido.detalles.all()),
         ZERO,
     )
-    pedido.descuento = calcular_descuento_pedido(pedido)
+    descuento_promocion = calcular_descuento_pedido(pedido)
+    base_cupon = max(ZERO, subtotal - descuento_promocion)
+    pedido.descuento = descuento_promocion + calcular_descuento_cupon(pedido, base_cupon)
     pedido.total = max(ZERO, subtotal - pedido.descuento)
     if guardar:
         pedido.save(update_fields=['descuento', 'total', 'updated_at'])

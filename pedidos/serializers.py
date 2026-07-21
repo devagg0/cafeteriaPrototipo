@@ -29,6 +29,7 @@ class PedidoSerializer(serializers.ModelSerializer):
     subtotal_original = serializers.SerializerMethodField()
     promocion_codigo = serializers.ReadOnlyField(source='promocion.codigo')
     promocion_nombre = serializers.ReadOnlyField(source='promocion.nombre')
+    cupon_codigo = serializers.ReadOnlyField(source='cupon.codigo')
     total_pendiente = serializers.SerializerMethodField()
     total_pagado = serializers.SerializerMethodField()
     cantidad_productos = serializers.SerializerMethodField()

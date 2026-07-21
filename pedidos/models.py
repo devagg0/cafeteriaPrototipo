@@ -30,6 +30,13 @@ class Pedido(models.Model):
         null=True,
         blank=True,
     )
+    cupon = models.ForeignKey(
+        'finanzas.Cupon',
+        on_delete=models.SET_NULL,
+        related_name='pedidos',
+        null=True,
+        blank=True,
+    )
     descuento = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     total = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     notas = models.TextField(blank=True, null=True)

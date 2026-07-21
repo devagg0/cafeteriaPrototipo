@@ -7,6 +7,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.db import transaction, IntegrityError
 from django.db.utils import OperationalError, ProgrammingError
+from decimal import Decimal
 from django.db.models import Count, Sum, Avg
 from django.utils.dateparse import parse_date
 from django.utils import timezone
@@ -15,9 +16,9 @@ from pedidos.models import Preorden, DetallePreorden, Pedido, DetallePedido
 from producto.models import Producto
 from usuarios.models import Cliente, Bitacora, Usuario
 from pedidos.historial.views import pedido_pertenece_al_usuario
-from .models import Pago, Opinion
+from .models import ConfiguracionPuntos, Cupon, CuponUso, Pago, Opinion, PuntoMovimiento
 from .reportes import interpretar_reporte_voz, reporte_dinamico, reporte_estatico
-from .serializers import OpinionSerializer
+from .serializers import ConfiguracionPuntosSerializer, CuponSerializer, CuponUsoSerializer, OpinionSerializer, PuntoMovimientoSerializer
 from reservas.views import JWTAuthentication, IsAuthenticatedJWT, IsEmpleadoOrAdmin
 from rest_framework.permissions import BasePermission
 
@@ -67,6 +68,52 @@ def _producto_nota(cantidad, nombre, precio, total, observaciones=''):
         'total': f'{float(total):.2f}',
         'observaciones': observaciones or '',
     }
+
+def saldo_puntos(usuario):
+    return PuntoMovimiento.objects.filter(usuario=usuario).aggregate(total=Sum('puntos'))['total'] or 0
+
+def registrar_puntos_por_pago(pago):
+    if not pago.pedido or not pago.pedido.usuario_id:
+        return
+    config, _ = ConfiguracionPuntos.objects.get_or_create(id=1)
+    if not config.activo:
+        return
+    if PuntoMovimiento.objects.filter(pedido=pago.pedido, tipo='ganado').exists():
+        return
+    puntos = int(Decimal(pago.monto) * config.puntos_por_bs)
+    if puntos <= 0:
+        return
+    usuario = pago.pedido.usuario
+    PuntoMovimiento.objects.create(
+        usuario=usuario,
+        pedido=pago.pedido,
+        tipo='ganado',
+        puntos=puntos,
+        saldo_resultante=saldo_puntos(usuario) + puntos,
+        descripcion=f'Puntos ganados por pago #{pago.id}',
+    )
+
+def confirmar_cupon_por_pago(pago):
+    if not pago.pedido or not pago.pedido.cupon_id:
+        return
+    uso, created = CuponUso.objects.get_or_create(
+        pedido=pago.pedido,
+        cupon=pago.pedido.cupon,
+        defaults={
+            'usuario': pago.pedido.usuario,
+            'pago': pago,
+            'monto_descuento': pago.pedido.descuento,
+            'confirmado': True,
+        }
+    )
+    if not created and not uso.confirmado:
+        uso.pago = pago
+        uso.confirmado = True
+        uso.monto_descuento = pago.pedido.descuento
+        uso.save(update_fields=['pago', 'confirmado', 'monto_descuento'])
+    cupon = uso.cupon
+    cupon.usos_actuales = cupon.usos.filter(confirmado=True).count()
+    cupon.save(update_fields=['usos_actuales', 'updated_at'])
 
 def construir_nota_venta(pago):
     pedido = pago.pedido
@@ -931,6 +978,8 @@ class ConfirmarPagoStripeView(APIView):
                             pedido = pago.pedido
                             pedido.estado = 'confirmado'
                             pedido.save()
+                            confirmar_cupon_por_pago(pago)
+                            registrar_puntos_por_pago(pago)
                             
                             # Liberar mesa si no quedan deudas
                             from pedidos.services import mesa_tiene_deudas_activas
@@ -987,6 +1036,8 @@ class ConfirmarPagoQRView(APIView):
                         pedido = pago.pedido
                         pedido.estado = 'confirmado'
                         pedido.save()
+                        confirmar_cupon_por_pago(pago)
+                        registrar_puntos_por_pago(pago)
                         
                         # Liberar mesa si no quedan deudas
                         from pedidos.services import mesa_tiene_deudas_activas
@@ -1218,3 +1269,152 @@ class ReporteVozView(APIView):
                 {'error': 'Formato de fecha invalido. Use YYYY-MM-DD.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+
+class CuponesView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        cupones = Cupon.objects.all().order_by('-created_at')
+        return Response(CuponSerializer(cupones, many=True).data)
+
+    def post(self, request):
+        serializer = CuponSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        cupon = serializer.save()
+        return Response(CuponSerializer(cupon).data, status=status.HTTP_201_CREATED)
+
+
+class CuponDetalleView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAdminUser]
+
+    def patch(self, request, pk):
+        try:
+            cupon = Cupon.objects.get(pk=pk)
+        except Cupon.DoesNotExist:
+            return Response({'error': 'Cupón no encontrado.'}, status=status.HTTP_404_NOT_FOUND)
+        serializer = CuponSerializer(cupon, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        return Response(CuponSerializer(serializer.save()).data)
+
+    def delete(self, request, pk):
+        try:
+            cupon = Cupon.objects.get(pk=pk)
+        except Cupon.DoesNotExist:
+            return Response({'error': 'Cupón no encontrado.'}, status=status.HTTP_404_NOT_FOUND)
+        if cupon.usos.filter(confirmado=True).exists():
+            return Response({'error': 'No se puede eliminar un cupón usado; desactívelo.'}, status=status.HTTP_400_BAD_REQUEST)
+        cupon.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class AplicarCuponPedidoView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsEmpleadoAtencionOrAdmin]
+
+    def post(self, request, pedido_id):
+        from pedidos.promociones import recalcular_totales_pedido
+        codigo = (request.data.get('codigo') or '').strip().upper()
+        if not codigo:
+            return Response({'error': 'El código del cupón es requerido.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            pedido = Pedido.objects.get(id=pedido_id)
+        except Pedido.DoesNotExist:
+            return Response({'error': 'Pedido no encontrado.'}, status=status.HTTP_404_NOT_FOUND)
+        if pedido.estado == 'cancelado':
+            return Response({'error': 'No se puede aplicar cupón a un pedido cancelado.'}, status=status.HTTP_400_BAD_REQUEST)
+        if Pago.objects.filter(pedido=pedido, estado='exitoso').exists():
+            return Response({'error': 'No se puede aplicar cupón a un pedido pagado.'}, status=status.HTTP_400_BAD_REQUEST)
+        cupon = Cupon.objects.filter(codigo__iexact=codigo).first()
+        if not cupon or not cupon.disponible:
+            return Response({'error': 'El cupón no existe, venció o ya no tiene usos disponibles.'}, status=status.HTTP_400_BAD_REQUEST)
+        pedido.cupon = cupon
+        recalcular_totales_pedido(pedido)
+        return Response({'mensaje': 'Cupón aplicado correctamente.', 'total': float(pedido.total), 'descuento': f'{pedido.descuento:.2f}', 'cupon_codigo': cupon.codigo})
+
+
+class QuitarCuponPedidoView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsEmpleadoAtencionOrAdmin]
+
+    def post(self, request, pedido_id):
+        from pedidos.promociones import recalcular_totales_pedido
+        try:
+            pedido = Pedido.objects.get(id=pedido_id)
+        except Pedido.DoesNotExist:
+            return Response({'error': 'Pedido no encontrado.'}, status=status.HTTP_404_NOT_FOUND)
+        pedido.cupon = None
+        recalcular_totales_pedido(pedido)
+        return Response({'mensaje': 'Cupón quitado correctamente.', 'total': float(pedido.total), 'descuento': f'{pedido.descuento:.2f}'})
+
+
+class PuntosClienteView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticatedJWT]
+
+    def get(self, request):
+        movimientos = PuntoMovimiento.objects.filter(usuario=request.user)
+        productos = Producto.objects.filter(estado=True, stock__gt=0).order_by('nombre')[:100]
+        return Response({
+            'saldo': saldo_puntos(request.user),
+            'historial': PuntoMovimientoSerializer(movimientos, many=True).data,
+            'productos_canjeables': [
+                {
+                    'id': p.id,
+                    'nombre': p.nombre,
+                    'stock': p.stock,
+                    'puntos': int(p.precio * 10),
+                    'precio': f'{p.precio:.2f}',
+                }
+                for p in productos
+            ],
+        })
+
+    def post(self, request):
+        producto_id = request.data.get('producto_id')
+        cantidad = int(request.data.get('cantidad') or 1)
+        if cantidad <= 0:
+            return Response({'error': 'La cantidad debe ser mayor a 0.'}, status=status.HTTP_400_BAD_REQUEST)
+        with transaction.atomic():
+            try:
+                producto = Producto.objects.select_for_update().get(id=producto_id, estado=True)
+            except Producto.DoesNotExist:
+                return Response({'error': 'Producto no encontrado.'}, status=status.HTTP_404_NOT_FOUND)
+            costo = int(producto.precio * 10) * cantidad
+            saldo = saldo_puntos(request.user)
+            if saldo < costo:
+                return Response({'error': 'Puntos insuficientes.'}, status=status.HTTP_400_BAD_REQUEST)
+            if producto.stock < cantidad:
+                return Response({'error': 'Stock insuficiente para el canje.'}, status=status.HTTP_400_BAD_REQUEST)
+            producto.stock -= cantidad
+            producto.save(update_fields=['stock', 'updated_at'])
+            movimiento = PuntoMovimiento.objects.create(
+                usuario=request.user,
+                producto=producto,
+                tipo='usado',
+                puntos=-costo,
+                saldo_resultante=saldo - costo,
+                descripcion=f'Canje de {cantidad} x {producto.nombre}',
+            )
+        return Response(PuntoMovimientoSerializer(movimiento).data, status=status.HTTP_201_CREATED)
+
+
+class PuntosAdminView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        config, _ = ConfiguracionPuntos.objects.get_or_create(id=1)
+        movimientos = PuntoMovimiento.objects.select_related('usuario', 'producto', 'pedido')[:200]
+        return Response({
+            'configuracion': ConfiguracionPuntosSerializer(config).data,
+            'movimientos': PuntoMovimientoSerializer(movimientos, many=True).data,
+        })
+
+    def patch(self, request):
+        config, _ = ConfiguracionPuntos.objects.get_or_create(id=1)
+        serializer = ConfiguracionPuntosSerializer(config, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        return Response(ConfiguracionPuntosSerializer(serializer.save()).data)
