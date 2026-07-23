@@ -73,17 +73,32 @@ def saldo_puntos(usuario):
     return PuntoMovimiento.objects.filter(usuario=usuario).aggregate(total=Sum('puntos'))['total'] or 0
 
 def registrar_puntos_por_pago(pago):
-    if not pago.pedido or not pago.pedido.usuario_id:
+    if not pago.pedido:
         return
+
     config, _ = ConfiguracionPuntos.objects.get_or_create(id=1)
+
     if not config.activo:
         return
-    if PuntoMovimiento.objects.filter(pedido=pago.pedido, tipo='ganado').exists():
+
+    if PuntoMovimiento.objects.filter(
+        pedido=pago.pedido,
+        tipo='ganado'
+    ).exists():
         return
+
     puntos = int(Decimal(pago.monto) * config.puntos_por_bs)
+
     if puntos <= 0:
         return
-    usuario = pago.pedido.usuario
+
+    # Asignar puntos al CLIENTE registrado
+    if pago.pedido.cliente:
+        usuario = pago.pedido.cliente.id_usuario
+    else:
+        # Si es cliente ocasional no se acumulan puntos
+        return
+
     PuntoMovimiento.objects.create(
         usuario=usuario,
         pedido=pago.pedido,

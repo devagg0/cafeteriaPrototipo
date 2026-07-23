@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from .models import Categoria, Combo, ComboDetalle, Producto
+from decimal import Decimal
 
 class CategoriaSerializer(serializers.ModelSerializer):
     class Meta:
@@ -60,20 +61,37 @@ class ComboSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError('La cantidad de cada producto debe ser mayor a 0.')
         return value
 
-    def create(self, validated_data):
-        detalles = validated_data.pop('detalles', [])
-        combo = Combo.objects.create(**validated_data)
-        for detalle in detalles:
-            ComboDetalle.objects.create(combo=combo, **detalle)
-        return combo
+def create(self, validated_data):
+    detalles = validated_data.pop('detalles', [])
+
+    combo = Combo.objects.create(**validated_data)
+
+    for detalle in detalles:
+        ComboDetalle.objects.create(combo=combo, **detalle)
+
+    # Calcular automáticamente el 15% de descuento
+    combo.precio_especial = (
+        combo.precio_normal * Decimal("0.85")
+    ).quantize(Decimal("0.01"))
+
+    combo.save(update_fields=["precio_especial"])
+
+    return combo
 
     def update(self, instance, validated_data):
         detalles = validated_data.pop('detalles', None)
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
-        if detalles is not None:
-            instance.detalles.all().delete()
-            for detalle in detalles:
-                ComboDetalle.objects.create(combo=instance, **detalle)
-        return instance
+    if detalles is not None:
+     instance.detalles.all().delete()
+    for detalle in detalles:
+        ComboDetalle.objects.create(combo=instance, **detalle)
+
+    instance.precio_especial = (
+    instance.precio_normal * Decimal("0.85")
+).quantize(Decimal("0.01"))
+
+    instance.save(update_fields=["precio_especial"])
+
+    return instance
