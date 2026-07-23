@@ -11,6 +11,7 @@ from .serializers import CategoriaSerializer, ComboSerializer, ProductoSerialize
 from usuarios.models import Usuario
 from usuarios.views import decodificar_token
 
+
 # ---------------------------------------------------------------------------
 # Auth compartida (duplicada para evitar import circular)
 # ---------------------------------------------------------------------------
@@ -18,12 +19,16 @@ from usuarios.views import decodificar_token
 class JWTAuthentication(BaseAuthentication):
     def authenticate(self, request):
         auth_header = request.headers.get('Authorization')
+
         if not auth_header or not auth_header.startswith('Bearer '):
             return None
+
         token = auth_header.split(' ')[1]
         payload = decodificar_token(token)
+
         if isinstance(payload, dict) and payload.get('error'):
             raise AuthenticationFailed(payload['error'])
+
         try:
             user = Usuario.objects.get(id_usuario=payload.get('user_id'))
             return (user, token)
@@ -33,7 +38,10 @@ class JWTAuthentication(BaseAuthentication):
 
 class IsAdmin(BasePermission):
     def has_permission(self, request, view):
-        return bool(request.user and request.user.cod_rol.cod_rol == 'admin')
+        return bool(
+            request.user and
+            request.user.cod_rol.cod_rol == 'admin'
+        )
 
 
 class IsAuthenticatedJWT(BasePermission):
@@ -57,11 +65,15 @@ class CategoriaViewSet(viewsets.ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         categoria = self.get_object()
+
         if categoria.productos.filter(estado=True).exists():
             return Response(
-                {'error': 'No se puede eliminar una categoría con productos activos'},
+                {
+                    'error': 'No se puede eliminar una categoría con productos activos'
+                },
                 status=status.HTTP_400_BAD_REQUEST
             )
+
         return super().destroy(request, *args, **kwargs)
 
 
@@ -82,14 +94,43 @@ class ProductoViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'])
     def disponibles(self, request):
-        """Productos con estado activo y stock > 0, y de categoría activa."""
-        qs = Producto.objects.filter(estado=True, stock__gt=0, categoria__estado=True)
+        """
+        Productos activos con stock mayor a 0.
+        """
+        qs = Producto.objects.filter(
+            estado=True,
+            stock__gt=0,
+            categoria__estado=True
+        )
+
+        serializer = self.get_serializer(qs, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['get'])
+    def activos(self, request):
+        """
+        Productos activos (aunque no tengan stock).
+        Ruta:
+            GET /api/productos/activos/
+        """
+        qs = Producto.objects.filter(
+            estado=True,
+            categoria__estado=True
+        )
+
         serializer = self.get_serializer(qs, many=True)
         return Response(serializer.data)
 
 
+# ---------------------------------------------------------------------------
+# ComboViewSet
+# ---------------------------------------------------------------------------
+
 class ComboViewSet(viewsets.ModelViewSet):
-    queryset = Combo.objects.prefetch_related('detalles__producto').all()
+    queryset = Combo.objects.prefetch_related(
+        'detalles__producto'
+    ).all()
+
     serializer_class = ComboSerializer
     authentication_classes = [JWTAuthentication]
 
@@ -100,13 +141,12 @@ class ComboViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'])
     def activos(self, request):
-        qs = self.get_queryset().filter(estado=True)
-        serializer = self.get_serializer(qs, many=True)
-        return Response(serializer.data)
+        """
+        Combos activos.
+        """
+        qs = self.get_queryset().filter(
+            estado=True
+        )
 
-    @action(detail=False, methods=['get'])
-    def activos(self, request):
-        """Productos con estado activo (stock puede ser 0)."""
-        qs = Producto.objects.filter(estado=True)
         serializer = self.get_serializer(qs, many=True)
         return Response(serializer.data)
